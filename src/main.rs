@@ -12,6 +12,7 @@
 mod client;
 mod protocol;
 mod server;
+mod usb;
 
 use protocol::Tech;
 use std::error::Error;
@@ -26,6 +27,7 @@ fn main() {
     let result = match args.get(1).map(String::as_str) {
         Some("server") => run_server(&args[2..]),
         Some("client") => run_client(&args[2..]),
+        Some("list") => run_list(),
         Some("--help") | Some("-h") | None => {
             print_usage();
             return;
@@ -48,6 +50,7 @@ fn run_server(args: &[String]) -> Result<(), Box<dyn Error>> {
         listen_addr: DEFAULT_ADDR.to_string(),
         tech: Tech::A,
         timeout_ms: 1000,
+        device_index: 0,
     };
 
     let mut i = 0;
@@ -55,6 +58,9 @@ fn run_server(args: &[String]) -> Result<(), Box<dyn Error>> {
         match args[i].as_str() {
             "--listen" | "-l" => config.listen_addr = take_value(args, &mut i, "--listen")?,
             "--tech" => config.tech = parse_tech(&take_value(args, &mut i, "--tech")?)?,
+            "--device-index" | "-d" => {
+                config.device_index = parse_usize(&take_value(args, &mut i, "--device-index")?)?
+            }
             "--timeout" | "-t" => {
                 config.timeout_ms = parse_u16(&take_value(args, &mut i, "--timeout")?)?
             }
@@ -75,12 +81,18 @@ fn run_client(args: &[String]) -> Result<(), Box<dyn Error>> {
         server_addr: DEFAULT_ADDR.to_string(),
         command_timeout_ms: 1000,
         listen_window_s: 1.0,
+        // Defaults to reader 1 so that, on a single host with two readers, the
+        // client and a default server (reader 0) do not collide.
+        device_index: 1,
     };
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--connect" | "-c" => config.server_addr = take_value(args, &mut i, "--connect")?,
+            "--device-index" | "-d" => {
+                config.device_index = parse_usize(&take_value(args, &mut i, "--device-index")?)?
+            }
             "--timeout" | "-t" => {
                 config.command_timeout_ms = parse_u16(&take_value(args, &mut i, "--timeout")?)?
             }
@@ -99,6 +111,22 @@ fn run_client(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     client::run(config)
+}
+
+fn run_list() -> Result<(), Box<dyn Error>> {
+    let readers = usb::list_port100()?;
+    if readers.is_empty() {
+        println!("no RC-S380 (Port-100) readers found");
+        return Ok(());
+    }
+    println!("attached RC-S380 readers:");
+    for reader in readers {
+        println!(
+            "  index {}  bus {:03} addr {:03}  pid 0x{:04X}",
+            reader.index, reader.bus, reader.address, reader.product_id
+        );
+    }
+    Ok(())
 }
 
 fn take_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, Box<dyn Error>> {
@@ -124,12 +152,19 @@ fn parse_u16(value: &str) -> Result<u16, Box<dyn Error>> {
         .map_err(|e| format!("invalid number '{}': {}", value, e).into())
 }
 
+fn parse_usize(value: &str) -> Result<usize, Box<dyn Error>> {
+    value
+        .parse()
+        .map_err(|e| format!("invalid index '{}': {}", value, e).into())
+}
+
 fn print_usage() {
     eprintln!("s380-relay — relay ISO14443 (NFC-A/B) traffic between two RC-S380 readers");
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  s380-relay server [options]   Card side: hold the real card, relay to it");
     eprintln!("  s380-relay client [options]   Phone side: emulate the card, relay taps");
+    eprintln!("  s380-relay list               List attached RC-S380 readers and indices");
     eprintln!();
     eprintln!("Run 's380-relay <command> --help' for command-specific options.");
     eprintln!();
@@ -143,6 +178,7 @@ fn print_server_usage() {
     eprintln!("  -l, --listen <addr:port>    Listen address (default: {})", DEFAULT_ADDR);
     eprintln!("      --tech <a|b>            ISO14443 technology (default: a)");
     eprintln!("                              NB: NFC-B can be polled but not emulated on RC-S380");
+    eprintln!("  -d, --device-index <n>      Which RC-S380 to use (default: 0; see 'list')");
     eprintln!("  -t, --timeout <ms>          Per-command timeout (default: 1000)");
     eprintln!("  -h, --help                  Show this help");
 }
@@ -152,6 +188,7 @@ fn print_client_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -c, --connect <addr:port>   Server address (default: {})", DEFAULT_ADDR);
+    eprintln!("  -d, --device-index <n>      Which RC-S380 to use (default: 1; see 'list')");
     eprintln!("  -t, --timeout <ms>          Per-command timeout (default: 1000)");
     eprintln!("  -w, --window <seconds>      Listen window length (default: 1.0)");
     eprintln!("  -h, --help                  Show this help");

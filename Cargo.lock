@@ -557,6 +557,7 @@ dependencies = [
  "felica",
  "hex",
  "log",
+ "rusb",
  "serde",
  "serde_json",
 ]
