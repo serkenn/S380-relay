@@ -1,0 +1,19 @@
+[package]
+name = "s380-relay"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Relay FeliCa/NFC-F traffic between two Sony RC-S380 (Port-100) readers over the network"
+license = "Apache-2.0"
+
+[dependencies]
+felica = "1.0"
+hex = "0.4"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[[bin]]
+name = "s380-relay"
+path = "src/main.rs"
