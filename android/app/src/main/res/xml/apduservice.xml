@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HCE routing table. Android only hands the SELECT (and the following APDUs) to
+  this app when the terminal's SELECT AID matches one of the entries below.
+  There is NO true catch-all, so this is a broad best-effort net:
+    * prefix filters (value ends with '*') cover whole payment/ID families
+    * exact AIDs cover a few well-known Type-4 / ID applets
+
+  >>> When you learn the real card's AID (from the server-side "card"/first
+      SELECT, or a capture), add it here as an exact <aid-filter> and reinstall.
+      Exact matches route most reliably. <<<
+
+  category="other" = non-payment. On some devices you must enable this app under
+  Settings > Connected devices > NFC > Other / Contactless payments.
+-->
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/service_desc"
+    android:requireDeviceUnlock="false">
+
+    <aid-group
+        android:category="other"
+        android:description="@string/aid_group_desc">
+
+        <!-- International payment families (prefix) -->
+        <aid-filter android:name="A000000003*" />  <!-- Visa -->
+        <aid-filter android:name="A000000004*" />  <!-- Mastercard/Maestro -->
+        <aid-filter android:name="A000000025*" />  <!-- American Express -->
+        <aid-filter android:name="A000000065*" />  <!-- JCB -->
+        <aid-filter android:name="A000000152*" />  <!-- Discover -->
+        <aid-filter android:name="A000000333*" />  <!-- UnionPay -->
+
+        <!-- ID / Type-4 / NDEF applets (exact) -->
+        <aid-filter android:name="A0000002471001" />   <!-- ICAO eMRTD LDS1 (passport/ID) -->
+        <aid-filter android:name="A00000024710FF" />   <!-- eMRTD variant -->
+        <aid-filter android:name="D2760000850101" />   <!-- NFC Forum Type 4 (NDEF) -->
+        <aid-filter android:name="D23000000181010100000000000000" /> <!-- example proprietary -->
+
+        <!-- Japan JPKI / My Number card family (prefix) -->
+        <aid-filter android:name="D392f000260100000001*" />
+
+    </aid-group>
+</host-apdu-service>
