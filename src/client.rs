@@ -1,13 +1,16 @@
-//! Client (phone side): drives a local RC-S380 as an ISO14443 Type A target
-//! that emulates the remote card. When a phone taps this reader, every block it
-//! sends is relayed to the server, and the real card's response is played back.
+//! Client (phone side): drives a local RC-S380 as a Type A ISO-DEP (Type 4)
+//! target. It presents a synthetic Type 4 card to the phone, terminates
+//! ISO-DEP locally, and relays the command APDUs to the server — whose real
+//! card may be Type A or Type B. Only the APDUs cross the link, so the phone is
+//! unaware of the real card's technology.
 //!
-//! The RC-S380 can only emulate NFC-A (and NFC-F), not NFC-B, so this side
-//! supports Type A relay only.
+//! The RC-S380 can only emulate NFC-A (and NFC-F), so this side is always
+//! Type A regardless of the server's card.
 
-use crate::protocol::{RelayRequest, RelayResponse, Tech};
-use felica::driver::port100::Device;
+use crate::isodep;
+use crate::protocol::{RelayRequest, RelayResponse};
 use crate::usb::{RusbTransport, open_port100_indexed};
+use felica::driver::port100::Device;
 use felica::{DeviceInfo, LocalTarget};
 use hex::{decode as hex_decode, encode as hex_encode};
 use log::{debug, info, warn};
@@ -15,22 +18,25 @@ use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 
+/// Synthetic Type A activation values presented to the phone. The ATS declares
+/// FSCI=8 (256-byte frames) and TA/TB/TC, matching a generic Type 4 card.
+const SENS_RES: [u8; 2] = [0x04, 0x00];
+const UID_TAIL: [u8; 3] = [0x01, 0x02, 0x03]; // follows the 0x08 CT tag
+const SAK: [u8; 1] = [0x20]; // ISO14443-4 supported
+const ATS: [u8; 5] = [0x05, 0x78, 0x80, 0x70, 0x02];
+/// Assumed phone frame size (FSD) when chaining a long response back.
+const PHONE_FSD: usize = 256;
+
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     pub server_addr: String,
     pub command_timeout_ms: u16,
-    /// How long a single `listen_type_a` window waits for a tap, in seconds.
     pub listen_window_s: f32,
-    /// Which attached RC-S380 to use (0-based), for multi-reader hosts.
     pub device_index: usize,
-}
-
-/// Activation parameters of the card being emulated.
-struct EmulatedCard {
-    atqa: Vec<u8>,
-    uid: Vec<u8>,
-    sak: Vec<u8>,
-    ats: Vec<u8>,
+    /// Send S(WTX) to the phone before relaying, to survive network latency.
+    pub use_wtx: bool,
+    /// Waiting-time extension multiplier used with S(WTX) (1..=59).
+    pub wtxm: u8,
 }
 
 /// A buffered line-based connection to the relay server.
@@ -58,6 +64,18 @@ impl ServerLink {
         }
         Ok(serde_json::from_str::<RelayResponse>(line.trim())?)
     }
+
+    /// Relays one command APDU and returns the response APDU bytes.
+    fn apdu(&mut self, capdu: &[u8], timeout_ms: u16) -> Result<Vec<u8>, Box<dyn Error>> {
+        match self.request(&RelayRequest::Apdu {
+            data: hex_encode(capdu),
+            timeout_ms: Some(timeout_ms),
+        })? {
+            RelayResponse::Apdu { data } => Ok(hex_decode(data.trim())?),
+            RelayResponse::Error { message } => Err(format!("server: {}", message).into()),
+            other => Err(format!("unexpected relay response: {:?}", other).into()),
+        }
+    }
 }
 
 pub fn run(config: ClientConfig) -> Result<(), Box<dyn Error>> {
@@ -72,37 +90,18 @@ pub fn run(config: ClientConfig) -> Result<(), Box<dyn Error>> {
     let mut link = ServerLink::connect(&config.server_addr)?;
     println!("connected to relay server at {}", config.server_addr);
 
-    let card = match link.request(&RelayRequest::GetCard)? {
-        RelayResponse::Card {
-            tech: Tech::A,
-            atqa,
-            uid,
-            sak,
-            ats,
-        } => EmulatedCard {
-            atqa: hex_decode(atqa.trim())?,
-            uid: hex_decode(uid.trim())?,
-            sak: hex_decode(sak.trim())?,
-            ats: hex_decode(ats.trim())?,
-        },
-        RelayResponse::Card { tech: Tech::B, .. } => {
-            return Err("the server is relaying NFC-B, which the RC-S380 cannot emulate; \
-                        run the server with --tech a"
-                .into());
+    match link.request(&RelayRequest::GetCard)? {
+        RelayResponse::Card { tech, info } => {
+            println!("real card activated: NFC-{:?} ({})", tech, info);
         }
         RelayResponse::Error { message } => {
-            return Err(format!("server could not read the card: {}", message).into());
+            return Err(format!("server could not activate the card: {}", message).into());
         }
         other => return Err(format!("unexpected response to get_card: {:?}", other).into()),
-    };
+    }
 
-    let target = build_local_target(&card)?;
-    println!(
-        "emulating NFC-A card UID={} SAK={} ATS={}; tap a phone to this reader",
-        hex_encode(&card.uid),
-        hex_encode(&card.sak),
-        hex_encode(&card.ats),
-    );
+    let target = build_local_target()?;
+    println!("emulating a Type 4 (NFC-A) card; tap a phone to this reader");
 
     loop {
         if let Err(e) = emulate_once(&mut device, &target, &mut link, &config) {
@@ -111,84 +110,136 @@ pub fn run(config: ClientConfig) -> Result<(), Box<dyn Error>> {
     }
 }
 
-/// Builds the `LocalTarget` the RC-S380 emulates from the card parameters.
-///
-/// The port100 emulation presents a single-size (4-byte) NFCID1 whose first
-/// byte is the `0x08` "dynamically generated UID" tag, so the real UID cannot be
-/// reproduced byte-for-byte. This does not affect ISO-DEP APDU exchange (what a
-/// JavaCard applet cares about), only the UID a reader sees.
-fn build_local_target(card: &EmulatedCard) -> Result<LocalTarget, Box<dyn Error>> {
-    if card.atqa.len() != 2 {
-        return Err(format!("expected 2-byte ATQA, got {}", hex_encode(&card.atqa)).into());
-    }
-    if card.sak.len() != 1 {
-        return Err(format!("expected 1-byte SAK, got {}", hex_encode(&card.sak)).into());
-    }
-
+/// Builds the synthetic Type A Type-4 target presented to the phone.
+fn build_local_target() -> Result<LocalTarget, Box<dyn Error>> {
     let mut target = LocalTarget::new("106A")?;
-    target.data.sens_res = Some(card.atqa.clone());
-
-    // sdd_res is 0x08 (CT tag) followed by 3 UID bytes; borrow the first three
-    // bytes of the real UID so at least part of it is visible.
+    target.data.sens_res = Some(SENS_RES.to_vec());
     let mut sdd = vec![0x08];
-    let mut uid_tail = card.uid.clone();
-    uid_tail.resize(3, 0x00);
-    sdd.extend_from_slice(&uid_tail[..3]);
+    sdd.extend_from_slice(&UID_TAIL);
     target.data.sdd_res = Some(sdd);
-
-    target.data.sel_res = Some(card.sak.clone());
-    if !card.ats.is_empty() {
-        target.data.rats_res = Some(card.ats.clone());
-    }
+    target.data.sel_res = Some(SAK.to_vec());
+    target.data.rats_res = Some(ATS.to_vec());
     Ok(target)
 }
 
-/// Runs one listen window: wait for a tap, then relay the session's blocks.
+/// Waits for a tap, then runs the PICC-side ISO-DEP loop for one session.
 fn emulate_once(
     device: &mut Device<RusbTransport>,
     target: &LocalTarget,
     link: &mut ServerLink,
     config: &ClientConfig,
 ) -> Result<(), Box<dyn Error>> {
-    let listened = device.listen_type_a(target, config.listen_window_s)?;
-
-    let Some(local) = listened else {
+    let Some(local) = device.listen_type_a(target, config.listen_window_s)? else {
         return Ok(()); // no tap within the window
     };
-
-    // Either an ISO-DEP I-block (Type 4) or a Type 2 command, whichever the
-    // phone sent first; both are relayed the same way.
-    let first_frame = local.data.tt4_cmd.or(local.data.tt2_cmd);
-    let Some(first_frame) = first_frame else {
-        return Ok(());
+    let Some(first) = local.data.tt4_cmd else {
+        return Ok(()); // not an ISO-DEP activation
     };
 
-    info!("phone activated; relaying session");
-    let mut next_frame = Some(first_frame);
-    while let Some(frame) = next_frame {
-        debug!("phone -> card: {}", hex_encode(&frame));
-        let response = match link.request(&RelayRequest::Relay {
-            data: hex_encode(&frame),
-            timeout_ms: Some(config.command_timeout_ms),
-        })? {
-            RelayResponse::Response { data } => hex_decode(data.trim())?,
-            RelayResponse::NoResponse => {
-                debug!("card gave no response; ending session");
-                break;
-            }
-            RelayResponse::Error { message } => {
-                warn!("server error during relay: {}", message);
-                break;
-            }
-            other => {
-                warn!("unexpected relay response: {:?}", other);
-                break;
-            }
-        };
+    info!("phone activated ISO-DEP; relaying APDUs");
+    let mut frame = first;
+    loop {
+        match process_phone_frame(device, link, config, frame)? {
+            Some(next) => frame = next,
+            None => return Ok(()),
+        }
+    }
+}
 
-        debug!("card -> phone: {}", hex_encode(&response));
-        next_frame = device.send_response_receive_command(&response, config.command_timeout_ms)?;
+/// Handles one block from the phone, returning the next block to process (or
+/// `None` when the session ends).
+fn process_phone_frame(
+    device: &mut Device<RusbTransport>,
+    link: &mut ServerLink,
+    config: &ClientConfig,
+    frame: Vec<u8>,
+) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+    let Some(&pcb) = frame.first() else {
+        return Ok(None);
+    };
+    let t = config.command_timeout_ms;
+
+    if isodep::is_s_deselect(pcb) {
+        debug!("phone sent S(DESELECT); ending session");
+        let _ = device.send_response_receive_command(&frame, t)?;
+        return Ok(None);
+    }
+    if isodep::is_s_wtx(pcb) {
+        // Unusual from a phone; echo the WTXM to keep the dialogue alive.
+        let wtxm = frame.get(1).copied().unwrap_or(1);
+        return Ok(device.send_response_receive_command(&isodep::s_wtx(wtxm), t)?);
+    }
+    if !isodep::is_i_block(pcb) {
+        debug!("phone sent unexpected PCB {:#04X}; ignoring", pcb);
+        return Ok(None);
     }
 
-    Ok(())
+    // Reassemble a (possibly chained) command APDU.
+    let mut bn = isodep::block_number(pcb);
+    let mut capdu = isodep::inf(&frame).to_vec();
+    let mut chaining = isodep::has_chaining(pcb);
+    while chaining {
+        let Some(next) = device.send_response_receive_command(&[isodep::r_ack(bn)], t)? else {
+            return Ok(None);
+        };
+        let npcb = next[0];
+        if !isodep::is_i_block(npcb) {
+            return Ok(None);
+        }
+        bn = isodep::block_number(npcb);
+        capdu.extend_from_slice(isodep::inf(&next));
+        chaining = isodep::has_chaining(npcb);
+    }
+    debug!("phone -> card APDU: {}", hex_encode(&capdu));
+
+    // Buy time over the network link before relaying, if enabled.
+    if config.use_wtx {
+        let Some(_wtx_resp) = device.send_response_receive_command(&isodep::s_wtx(config.wtxm), t)?
+        else {
+            return Ok(None);
+        };
+    }
+
+    let rapdu = link.apdu(&capdu, t)?;
+    debug!("card -> phone APDU: {}", hex_encode(&rapdu));
+
+    send_response_apdu(device, bn, &rapdu, t)
+}
+
+/// Sends a response APDU back to the phone as one or more I-blocks (chaining it
+/// when it exceeds the phone's frame size), returning the phone's next block.
+fn send_response_apdu(
+    device: &mut Device<RusbTransport>,
+    bn: u8,
+    rapdu: &[u8],
+    timeout: u16,
+) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+    let max_inf = PHONE_FSD.saturating_sub(2).max(1);
+    if rapdu.len() <= max_inf {
+        let mut block = Vec::with_capacity(rapdu.len() + 1);
+        block.push(isodep::i_block(bn, false));
+        block.extend_from_slice(rapdu);
+        return Ok(device.send_response_receive_command(&block, timeout)?);
+    }
+
+    let chunks: Vec<&[u8]> = rapdu.chunks(max_inf).collect();
+    let mut cur_bn = bn;
+    for (i, chunk) in chunks.iter().enumerate() {
+        let last = i == chunks.len() - 1;
+        let mut block = Vec::with_capacity(chunk.len() + 1);
+        block.push(isodep::i_block(cur_bn, !last));
+        block.extend_from_slice(chunk);
+        let Some(got) = device.send_response_receive_command(&block, timeout)? else {
+            return Ok(None);
+        };
+        if last {
+            return Ok(Some(got));
+        }
+        // Mid-chain: the phone acknowledges with an R(ACK); advance.
+        if got.first().copied().is_none_or(|p| !isodep::is_r_block(p)) {
+            return Ok(None);
+        }
+        cur_bn ^= 1;
+    }
+    Ok(None)
 }

@@ -1,45 +1,49 @@
 # s380-relay
 
-Relay ISO14443 (**NFC-A / NFC-B**) traffic between two Sony **RC-S380** (NFC
-Port-100) readers over the network, built in Rust on top of the
+Relay ISO14443 smartcard traffic between two Sony **RC-S380** (NFC Port-100)
+readers over the network, at the **APDU layer**, built in Rust on top of the
 [`felica`](https://crates.io/crates/felica) crate.
 
 One reader (the **server**) holds a real card — a JavaCard applet, a smartcard,
-etc. The other reader (the **client**) *emulates* that card. When a phone is
-tapped to the client, every APDU/block the phone sends is relayed over TCP to
-the server's reader, replayed to the real card, and the card's response is
-played back. From the phone's point of view it is talking to the real card; from
-the card's point of view it is talking to a real reader.
+etc. The other reader (the **client**) presents a card to a phone. When a phone
+is tapped to the client, every command APDU it sends is relayed over TCP to the
+server's reader, replayed to the real card, and the response APDU is played
+back. From the phone's point of view it is talking to the real card.
 
 ```
-   phone ⇢ [client RC-S380]  ──TCP──▶  [server RC-S380] ⇢ real card
-        (NFC-A emulation)                  (initiator)
+ phone ⇢ (Type A / ISO-DEP) ⇢ [client RC-S380] ──APDU over TCP──▶ [server RC-S380] ⇢ real card
+         └ ISO-DEP terminated here                                └ ISO-DEP terminated here
+                               only ISO 7816-4 APDUs cross the link
 ```
 
 This is an NFC relay/emulation setup for use with **your own readers and cards**
-in research, CTF, and interoperability testing.
+(or cards you are authorised to test) in research, CTF, and interoperability
+testing.
 
-## What works on the RC-S380
+## Cross-technology relay (A ⇄ B)
 
-The RC-S380's **card-emulation (target) mode supports NFC-A and NFC-F only — not
-NFC-B**. So:
+Type A (Type 4) and Type B both converge at **ISO14443-4 (the APDU layer)**.
+Because each side terminates ISO-DEP on its own reader and only the APDUs are
+relayed, the real card may be **Type A or Type B**, while the client always
+presents a **Type A Type-4 card** to the phone. The phone is unaware of the real
+card's technology.
 
-| Technology | Server (poll real card) | Client (emulate to phone) | End-to-end relay |
-|------------|:-----------------------:|:-------------------------:|:----------------:|
-| NFC-A (Type 2 / Type 4 ISO-DEP) | ✅ | ✅ | ✅ |
-| NFC-B | ✅ (poll only) | ❌ (hardware cannot emulate) | ❌ |
+| Real card (server) | Emulated to phone (client) | Relay |
+|--------------------|----------------------------|:-----:|
+| NFC-A, ISO-DEP (Type 4) | NFC-A Type 4 | ✅ |
+| NFC-B, ISO14443-4 | NFC-A Type 4 | ✅ |
+| NFC-A, non-ISO-DEP (Type 2, e.g. MIFARE Ultralight) | — | ❌ (no layer-4 APDUs) |
 
-NFC-A ISO-DEP (Type 4, i.e. ISO 7816-4 APDUs — what a JavaCard applet uses) is
-the fully supported path. NFC-B can be polled on the server side for inspection,
-but because no RC-S380 can emulate a Type B card, end-to-end B relay is not
-possible with this hardware; the client reports this clearly if you try.
+The RC-S380 cannot emulate NFC-B, but it does not need to: the client side is
+always NFC-A. Only a real card that speaks ISO14443-4 can be relayed (a plain
+Type 2 tag has no APDU layer).
 
-### UID fidelity
+### UID / identity
 
-The port100 emulation presents a single-size (4-byte) NFCID1 whose first byte is
-the `0x08` "dynamically generated UID" tag, so the real card's UID is **not**
-reproduced byte-for-byte. This does not affect the ISO-DEP APDU exchange (what a
-JavaCard applet cares about), only the UID a reader observes.
+The client presents a synthetic Type 4 identity (a 4-byte `0x08`-tagged UID and
+a generic ATS); the real card's UID/ATS/ATQB is not reproduced. This does not
+affect the ISO 7816-4 APDU exchange (what a JavaCard applet cares about), only
+the lower-layer identity a reader observes.
 
 ## Requirements
 
@@ -85,13 +89,13 @@ RUST_LOG=info ./target/release/s380-relay server --listen 0.0.0.0:7878
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `-l, --listen <addr:port>` | `127.0.0.1:7878` | TCP listen address |
-| `--tech <a\|b>` | `a` | ISO14443 technology (B is poll-only) |
+| `--tech <a\|b>` | `a` | Real card's ISO14443 technology |
 | `-d, --device-index <n>` | `0` | Which RC-S380 to use (see `list`) |
 | `-t, --timeout <ms>` | `1000` | Per-command timeout |
 
-### Client (phone side, NFC-A)
+### Client (phone side)
 
-Connect to the server and start emulating; then tap a phone to this reader:
+Connect to the server and start emulating a Type 4 card; then tap a phone:
 
 ```sh
 RUST_LOG=info ./target/release/s380-relay client --connect <server-ip>:7878
@@ -101,22 +105,30 @@ RUST_LOG=info ./target/release/s380-relay client --connect <server-ip>:7878
 |------|---------|---------|
 | `-c, --connect <addr:port>` | `127.0.0.1:7878` | Server address |
 | `-d, --device-index <n>` | `1` | Which RC-S380 to use (see `list`) |
+| `--no-wtx` | (off) | Do not send S(WTX) before relaying |
+| `--wtxm <1-59>` | `10` | Waiting-time extension multiplier |
 | `-t, --timeout <ms>` | `1000` | Per-command timeout |
 | `-w, --window <seconds>` | `1.0` | Listen window length |
 
-## How the relay works (NFC-A ISO-DEP)
+`S(WTX)` is sent to the phone before each relayed command so the network
+round-trip stays within the phone's frame-waiting time; raise `--wtxm` (or lower
+it) to tune, or `--no-wtx` to disable.
 
-1. The client asks the server for the card (`get_card`). The server runs NFC-A
-   anticollision + SEL, sends `RATS` to the real card, and returns the ATQA,
-   UID, SAK and **ATS**.
-2. The client builds a matching emulated target (SAK advertising ISO-DEP, the
-   real ATS) and listens. When a phone taps, the client answers the phone's
-   `RATS` locally with that ATS, so both the phone↔client link and the
-   server↔card link start ISO-DEP block numbering at 0, in lockstep.
-3. Each ISO-DEP block the phone sends (`tt4_cmd`) is relayed verbatim to the
-   server, replayed to the card with `transceive`, and the card's response is
-   sent back to the phone. S-blocks (WTX) and chaining are relayed transparently
-   because blocks are passed through byte-for-byte.
+## How the relay works
+
+1. The client asks the server for the card (`get_card`). The server activates
+   the real card into ISO-DEP — Type A via anticollision + SEL + `RATS`, or
+   Type B via `SENSB` + `ATTRIB` — and reports its ATS/ATQB.
+2. The client presents a synthetic Type 4 (NFC-A) card and listens. When a phone
+   taps, the client terminates ISO-DEP with the phone (answering `RATS` locally)
+   and reassembles each **command APDU**.
+3. The command APDU is relayed over TCP to the server, which runs its own
+   PCD-side ISO-DEP state machine (`src/isodep.rs`) to exchange it with the real
+   card — handling block-number toggling, command/response chaining and the
+   card's `S(WTX)` requests — and returns the response APDU.
+4. The client wraps the response back into ISO-DEP I-block(s) for the phone. The
+   two ISO-DEP sessions (phone↔client and server↔card) are independent; only the
+   APDUs are shared, which is what allows a Type B card to be presented as Type A.
 
 ## Wire protocol
 
@@ -125,26 +137,27 @@ Newline-delimited JSON over TCP, mirroring the `felica-rs` remote examples:
 ```jsonc
 // client → server
 {"type":"get_card"}
-// server → client (NFC-A)
-{"type":"card","tech":"A","atqa":"0400","uid":"04AABB...","sak":"20","ats":"0578807002"}
-
-// client → server: relay one ISO-DEP block (PCB + payload, no CRC)
-{"type":"relay","data":"0200A4...","timeout_ms":1000}
 // server → client
-{"type":"response","data":"03..."}     // card answered
-{"type":"no_response"}                   // card silent / removed
+{"type":"card","tech":"B","info":"5090be4e5b000005e0b381a100"}
+
+// client → server: relay one command APDU
+{"type":"apdu","data":"00A4040007A0000002471001","timeout_ms":1000}
+// server → client
+{"type":"apdu","data":"6F..9000"}      // response APDU
 {"type":"error","message":"..."}
 ```
 
-All `data` fields are hex-encoded ISO-DEP blocks **without the CRC**, which each
-reader appends on transmit and strips on receive — so blocks relay verbatim.
+All `data` fields are hex-encoded ISO 7816-4 APDUs. ISO-DEP framing (PCB, CRC,
+chaining, WTX) is handled on each side and never crosses the link.
 
 ## Notes & limitations
 
-- NFC-B cannot be emulated by the RC-S380 (see table above).
-- UID is not reproduced byte-for-byte (see UID fidelity above).
-- Relay latency depends on the network link; ISO-DEP frame-waiting times (FWT)
-  are bounded, so a high-latency link can cause the phone to time out a session.
+- Only ISO14443-4 cards can be relayed; a plain Type 2 tag has no APDU layer.
+- The emulated card's UID/ATS is synthetic, not the real card's (see above).
+- Relay latency depends on the network link; `S(WTX)` buys time, but a very slow
+  link can still make a phone drop the session.
+- Command/response chaining paths are implemented but, lacking multi-reader
+  hardware for every case, are best-effort; most APDUs fit a single block.
 - One physical reader per side means the server serves one client at a time.
 
 ## License
