@@ -2,6 +2,12 @@
 //! the real card (Type A or Type B) into ISO-DEP, and relays command APDUs to
 //! it for a remote client.
 //!
+//! A card can drop out of its ISO14443-4 (layer 4) state while the field sits
+//! idle — for instance during the seconds between `get_card` and the phone
+//! actually being tapped to the client. So an APDU exchange that fails is
+//! retried once after transparently re-activating the card (re-RATS/-ATTRIB and
+//! resetting the block number), which is what lets a fresh phone tap succeed.
+//!
 //! Only one physical reader is involved, so connections are served one at a
 //! time; a new client waits until the previous one disconnects.
 
@@ -62,10 +68,19 @@ pub fn run(config: ServerConfig) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// A card that has been activated into ISO-DEP.
+struct Activated {
+    target: RemoteTarget,
+    fsc: usize,
+    info: String,
+}
+
 /// Per-connection state: the activated target and its ISO-DEP (PCD) layer.
+#[derive(Default)]
 struct Session {
     target: Option<RemoteTarget>,
     pcd: Option<Pcd>,
+    info: String,
 }
 
 fn handle_client(
@@ -75,10 +90,7 @@ fn handle_client(
 ) -> Result<(), Box<dyn Error>> {
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
-    let mut session = Session {
-        target: None,
-        pcd: None,
-    };
+    let mut session = Session::default();
 
     loop {
         let mut line = String::new();
@@ -108,9 +120,12 @@ fn process_request(
     request: RelayRequest,
 ) -> RelayResponse {
     match request {
-        RelayRequest::GetCard => match config.tech {
-            Tech::A => activate_type_a(device, config, session),
-            Tech::B => activate_type_b(device, config, session),
+        RelayRequest::GetCard => match reactivate(device, config, session) {
+            Ok(()) => RelayResponse::Card {
+                tech: config.tech,
+                info: session.info.clone(),
+            },
+            Err(e) => RelayResponse::error(e),
         },
         RelayRequest::Apdu { data, timeout_ms } => relay_apdu(device, config, session, data, timeout_ms),
     }
@@ -123,15 +138,56 @@ fn relay_apdu(
     data: String,
     timeout_ms: Option<u16>,
 ) -> RelayResponse {
-    let (Some(target), Some(pcd)) = (session.target.as_ref(), session.pcd.as_mut()) else {
-        return RelayResponse::error("no activated card; send get_card first");
-    };
     let apdu = match hex_decode(data.trim()) {
         Ok(bytes) => bytes,
         Err(e) => return RelayResponse::error(format!("bad hex APDU: {}", e)),
     };
     let timeout = timeout_ms.unwrap_or(config.timeout_ms);
 
+    if session.target.is_none()
+        && let Err(e) = reactivate(device, config, session)
+    {
+        return RelayResponse::error(e);
+    }
+
+    // First attempt against the already-activated card.
+    match exchange(session, device, &apdu, timeout) {
+        Ok(response) => return apdu_response(&response),
+        Err(e) => debug!("APDU failed ({e}); re-activating card and retrying once"),
+    }
+
+    // The card likely dropped layer 4 while idle: re-activate and retry once.
+    if let Err(e) = reactivate(device, config, session) {
+        return RelayResponse::error(format!("re-activation failed: {}", e));
+    }
+    match exchange(session, device, &apdu, timeout) {
+        Ok(response) => apdu_response(&response),
+        Err(e) => RelayResponse::error(format!("APDU exchange failed: {}", e)),
+    }
+}
+
+fn apdu_response(response: &[u8]) -> RelayResponse {
+    debug!("card APDU response: {}", hex_encode(response));
+    RelayResponse::Apdu {
+        data: hex_encode(response),
+    }
+}
+
+/// Runs one APDU exchange over the session's activated target and PCD layer.
+fn exchange(
+    session: &mut Session,
+    device: &mut Device<RusbTransport>,
+    apdu: &[u8],
+    timeout: u16,
+) -> Result<Vec<u8>, String> {
+    let Session {
+        target: Some(target),
+        pcd: Some(pcd),
+        ..
+    } = session
+    else {
+        return Err("no activated card".into());
+    };
     let send = |block: &[u8]| -> Result<Vec<u8>, String> {
         match device.transceive(target, block, Some(timeout)) {
             Ok(resp) if resp.is_empty() => Err("card gave no response".into()),
@@ -139,31 +195,34 @@ fn relay_apdu(
             Err(e) => Err(e.to_string()),
         }
     };
+    pcd.transmit(send, apdu)
+}
 
-    match pcd.transmit(send, &apdu) {
-        Ok(response) => {
-            debug!("card APDU response: {}", hex_encode(&response));
-            RelayResponse::Apdu {
-                data: hex_encode(&response),
-            }
-        }
-        Err(e) => RelayResponse::error(format!("APDU exchange failed: {}", e)),
-    }
+/// (Re)activates the real card into ISO-DEP and resets the session's PCD layer.
+fn reactivate(
+    device: &mut Device<RusbTransport>,
+    config: &ServerConfig,
+    session: &mut Session,
+) -> Result<(), String> {
+    let activated = match config.tech {
+        Tech::A => activate_type_a(device, config)?,
+        Tech::B => activate_type_b(device, config)?,
+    };
+    session.info = activated.info;
+    session.pcd = Some(Pcd::new(activated.fsc));
+    session.target = Some(activated.target);
+    Ok(())
 }
 
 fn activate_type_a(
     device: &mut Device<RusbTransport>,
     config: &ServerConfig,
-    session: &mut Session,
-) -> RelayResponse {
-    let probe = match RemoteTarget::new("106A") {
-        Ok(t) => t,
-        Err(e) => return RelayResponse::error(format!("bad target: {}", e)),
-    };
+) -> Result<Activated, String> {
+    let probe = RemoteTarget::new("106A").map_err(|e| format!("bad target: {e}"))?;
     let found = match device.detect_type_a(&probe) {
         Ok(Some(found)) => found,
-        Ok(None) => return RelayResponse::error("no NFC-A card detected"),
-        Err(e) => return RelayResponse::error(format!("NFC-A activation failed: {}", e)),
+        Ok(None) => return Err("no NFC-A card detected".into()),
+        Err(e) => return Err(format!("NFC-A activation failed: {e}")),
     };
 
     let sak = found
@@ -174,46 +233,37 @@ fn activate_type_a(
         .copied()
         .unwrap_or(0);
     if sak & SAK_ISO_DEP == 0 {
-        return RelayResponse::error("NFC-A card is not ISO14443-4 (no ISO-DEP to relay)");
+        return Err("NFC-A card is not ISO14443-4 (no ISO-DEP to relay)".into());
     }
 
     // RATS: FSDI=8 (256-byte frames), CID=0.
-    let ats = match device.transceive(&found, &[0xE0, 0x80], Some(config.timeout_ms)) {
-        Ok(ats) => ats,
-        Err(e) => return RelayResponse::error(format!("RATS failed: {}", e)),
-    };
+    let ats = device
+        .transceive(&found, &[0xE0, 0x80], Some(config.timeout_ms))
+        .map_err(|e| format!("RATS failed: {e}"))?;
     let fsc = fsc_from_ats(&ats);
     info!("NFC-A ISO-DEP card: ATS={} (FSC={})", hex_encode(&ats), fsc);
 
-    session.target = Some(found);
-    session.pcd = Some(Pcd::new(fsc));
-    RelayResponse::Card {
-        tech: Tech::A,
+    Ok(Activated {
+        target: found,
+        fsc,
         info: hex_encode(&ats),
-    }
+    })
 }
 
 fn activate_type_b(
     device: &mut Device<RusbTransport>,
     config: &ServerConfig,
-    session: &mut Session,
-) -> RelayResponse {
-    let probe = match RemoteTarget::new("106B") {
-        Ok(t) => t,
-        Err(e) => return RelayResponse::error(format!("bad target: {}", e)),
-    };
+) -> Result<Activated, String> {
+    let probe = RemoteTarget::new("106B").map_err(|e| format!("bad target: {e}"))?;
     let found = match device.detect_type_b(&probe) {
         Ok(Some(found)) => found,
-        Ok(None) => return RelayResponse::error("no NFC-B card detected"),
-        Err(e) => return RelayResponse::error(format!("NFC-B activation failed: {}", e)),
+        Ok(None) => return Err("no NFC-B card detected".into()),
+        Err(e) => return Err(format!("NFC-B activation failed: {e}")),
     };
 
     let sensb_res = found.data.sensb_res.clone().unwrap_or_default();
     if sensb_res.len() < 12 {
-        return RelayResponse::error(format!(
-            "SENSB_RES too short: {}",
-            hex_encode(&sensb_res)
-        ));
+        return Err(format!("SENSB_RES too short: {}", hex_encode(&sensb_res)));
     }
 
     // ATTRIB: 0x1D + PUPI(4) + Param1..4. Param2=0x80 → FSDI=8 (256-byte PCD
@@ -224,7 +274,7 @@ fn activate_type_b(
     attrib.extend_from_slice(&[0x00, 0x80, 0x01, 0x00]);
     match device.transceive(&found, &attrib, Some(config.timeout_ms)) {
         Ok(resp) => debug!("ATTRIB response: {}", hex_encode(&resp)),
-        Err(e) => return RelayResponse::error(format!("ATTRIB failed: {}", e)),
+        Err(e) => return Err(format!("ATTRIB failed: {e}")),
     }
 
     // Type B frame size: high nibble of the first Protocol-Info byte (byte 9).
@@ -235,12 +285,11 @@ fn activate_type_b(
         fsc
     );
 
-    session.target = Some(found);
-    session.pcd = Some(Pcd::new(fsc));
-    RelayResponse::Card {
-        tech: Tech::B,
+    Ok(Activated {
+        target: found,
+        fsc,
         info: hex_encode(&sensb_res),
-    }
+    })
 }
 
 /// Derives the card's frame size (FSC) from its ATS; the FSCI is the low nibble
