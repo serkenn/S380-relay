@@ -8,6 +8,7 @@ license = "Apache-2.0"
 
 [dependencies]
 felica = "1.0"
+rusb = "0.9"
 hex = "0.4"
 log = "0.4"
 env_logger = "0.11"

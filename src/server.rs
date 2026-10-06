@@ -6,8 +6,9 @@
 //! time; a new client waits until the previous one disconnects.
 
 use crate::protocol::{RelayRequest, RelayResponse, Tech};
+use crate::usb::{RusbTransport, open_port100_indexed};
 use felica::driver::port100::Device;
-use felica::{DeviceInfo, RemoteTarget, UsbTransport, open_port100};
+use felica::{DeviceInfo, RemoteTarget};
 use hex::{decode as hex_decode, encode as hex_encode};
 use log::{info, warn};
 use std::error::Error;
@@ -27,12 +28,15 @@ pub struct ServerConfig {
     pub listen_addr: String,
     pub tech: Tech,
     pub timeout_ms: u16,
+    /// Which attached RC-S380 to use (0-based), for multi-reader hosts.
+    pub device_index: usize,
 }
 
 pub fn run(config: ServerConfig) -> Result<(), Box<dyn Error>> {
-    let mut device = open_port100()?;
+    let mut device = open_port100_indexed(config.device_index)?;
     info!(
-        "reader: {} - {}",
+        "reader[{}]: {} - {}",
+        config.device_index,
         device.vendor_name().unwrap_or("Unknown"),
         device.product_name().unwrap_or("Unknown"),
     );
@@ -68,7 +72,7 @@ struct Session {
 
 fn handle_client(
     stream: TcpStream,
-    device: &mut Device<UsbTransport>,
+    device: &mut Device<RusbTransport>,
     config: &ServerConfig,
 ) -> Result<(), Box<dyn Error>> {
     let mut writer = stream.try_clone()?;
@@ -97,7 +101,7 @@ fn handle_client(
 }
 
 fn process_request(
-    device: &mut Device<UsbTransport>,
+    device: &mut Device<RusbTransport>,
     config: &ServerConfig,
     session: &mut Session,
     request: RelayRequest,
@@ -128,7 +132,7 @@ fn process_request(
 }
 
 fn activate_type_a(
-    device: &mut Device<UsbTransport>,
+    device: &mut Device<RusbTransport>,
     config: &ServerConfig,
     session: &mut Session,
 ) -> RelayResponse {
@@ -180,7 +184,7 @@ fn activate_type_a(
 }
 
 fn activate_type_b(
-    device: &mut Device<UsbTransport>,
+    device: &mut Device<RusbTransport>,
     _config: &ServerConfig,
     session: &mut Session,
 ) -> RelayResponse {

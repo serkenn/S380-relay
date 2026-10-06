@@ -7,7 +7,8 @@
 
 use crate::protocol::{RelayRequest, RelayResponse, Tech};
 use felica::driver::port100::Device;
-use felica::{DeviceInfo, LocalTarget, UsbTransport, open_port100};
+use crate::usb::{RusbTransport, open_port100_indexed};
+use felica::{DeviceInfo, LocalTarget};
 use hex::{decode as hex_decode, encode as hex_encode};
 use log::{debug, info, warn};
 use std::error::Error;
@@ -20,6 +21,8 @@ pub struct ClientConfig {
     pub command_timeout_ms: u16,
     /// How long a single `listen_type_a` window waits for a tap, in seconds.
     pub listen_window_s: f32,
+    /// Which attached RC-S380 to use (0-based), for multi-reader hosts.
+    pub device_index: usize,
 }
 
 /// Activation parameters of the card being emulated.
@@ -58,9 +61,10 @@ impl ServerLink {
 }
 
 pub fn run(config: ClientConfig) -> Result<(), Box<dyn Error>> {
-    let mut device = open_port100()?;
+    let mut device = open_port100_indexed(config.device_index)?;
     info!(
-        "reader: {} - {}",
+        "reader[{}]: {} - {}",
+        config.device_index,
         device.vendor_name().unwrap_or("Unknown"),
         device.product_name().unwrap_or("Unknown"),
     );
@@ -141,7 +145,7 @@ fn build_local_target(card: &EmulatedCard) -> Result<LocalTarget, Box<dyn Error>
 
 /// Runs one listen window: wait for a tap, then relay the session's blocks.
 fn emulate_once(
-    device: &mut Device<UsbTransport>,
+    device: &mut Device<RusbTransport>,
     target: &LocalTarget,
     link: &mut ServerLink,
     config: &ClientConfig,

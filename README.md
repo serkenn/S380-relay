@@ -56,7 +56,23 @@ cargo build --release
 
 ## Usage
 
-One binary, two subcommands, logging via `RUST_LOG`.
+One binary, subcommands `server` / `client` / `list`, logging via `RUST_LOG`.
+
+### Two readers on one host
+
+`list` shows the attached readers and their indices:
+
+```sh
+$ ./target/release/s380-relay list
+attached RC-S380 readers:
+  index 0  bus 003 addr 003  pid 0x06C1
+  index 1  bus 003 addr 005  pid 0x06C1
+```
+
+On a single host with two readers, give each side a different reader with
+`--device-index` (the server defaults to `0`, the client to `1`). On two
+separate hosts, each sees only its own reader, so the defaults work and you can
+omit the flag.
 
 ### Server (card side)
 
@@ -70,6 +86,7 @@ RUST_LOG=info ./target/release/s380-relay server --listen 0.0.0.0:7878
 |------|---------|---------|
 | `-l, --listen <addr:port>` | `127.0.0.1:7878` | TCP listen address |
 | `--tech <a\|b>` | `a` | ISO14443 technology (B is poll-only) |
+| `-d, --device-index <n>` | `0` | Which RC-S380 to use (see `list`) |
 | `-t, --timeout <ms>` | `1000` | Per-command timeout |
 
 ### Client (phone side, NFC-A)
@@ -83,6 +100,7 @@ RUST_LOG=info ./target/release/s380-relay client --connect <server-ip>:7878
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `-c, --connect <addr:port>` | `127.0.0.1:7878` | Server address |
+| `-d, --device-index <n>` | `1` | Which RC-S380 to use (see `list`) |
 | `-t, --timeout <ms>` | `1000` | Per-command timeout |
 | `-w, --window <seconds>` | `1.0` | Listen window length |
 
