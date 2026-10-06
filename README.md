@@ -4,6 +4,8 @@ Relay ISO14443 smartcard traffic between two Sony **RC-S380** (NFC Port-100)
 readers over the network, at the **APDU layer**, built in Rust on top of the
 [`felica`](https://crates.io/crates/felica) crate.
 
+> 日本語版は [README_ja.md](README_ja.md) にあります。
+
 One reader (the **server**) holds a real card — a JavaCard applet, a smartcard,
 etc. The other reader (the **client**) presents a card to a phone. When a phone
 is tapped to the client, every command APDU it sends is relayed over TCP to the
