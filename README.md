@@ -54,6 +54,26 @@ the lower-layer identity a reader observes.
 - USB access to the readers (on Linux you may need a udev rule or sufficient
   privileges)
 
+### Windows: install a WinUSB driver with Zadig
+
+This tool talks to the reader through `libusb` (via the `rusb` crate), which on
+Windows needs the device bound to the **WinUSB** driver. The RC-S380 normally
+uses Sony's own driver (for FeliCa Port software), so `libusb` cannot open it
+until you replace that driver.
+
+Use [Zadig](https://zadig.akeo.ie/):
+
+1. Plug in the RC-S380 and run Zadig.
+2. **Options → List All Devices**, then select the RC-S380 (`SONY RC-S380`,
+   USB ID `054C:06C1`).
+3. Choose **WinUSB** as the target driver and click **Replace Driver** (or
+   *Install Driver*).
+4. Repeat for the second reader.
+
+Do this per reader. To go back to the Sony FeliCa software later, uninstall the
+WinUSB driver for the device in Device Manager and let Windows restore Sony's
+driver. macOS and Linux need no such step.
+
 ## Build
 
 ```sh

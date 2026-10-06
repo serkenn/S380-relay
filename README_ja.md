@@ -48,6 +48,25 @@ APDU 交換（JavaCard applet が関知する部分）には影響せず、リ�
 - Sony RC-S380 を 2 台（別々のマシンに 1 台ずつ、または 1 台のホストに 2 台）
 - リーダへの USB アクセス権（Linux では udev ルールや十分な権限が必要な場合あり）
 
+### Windows: Zadig で WinUSB ドライバを当てる
+
+本ツールは `libusb`（`rusb` クレート経由）でリーダと通信します。Windows では
+これを使うためデバイスを **WinUSB** ドライバに紐づける必要があります。RC-S380 は
+通常 Sony 純正ドライバ（FeliCa ポートソフト用）を使っているため、そのままでは
+`libusb` が開けません。ドライバを置き換えてください。
+
+[Zadig](https://zadig.akeo.ie/) を使用します:
+
+1. RC-S380 を接続して Zadig を起動。
+2. **Options → List All Devices** を選び、RC-S380（`SONY RC-S380`、USB ID
+   `054C:06C1`）を選択。
+3. ターゲットドライバに **WinUSB** を選び **Replace Driver**（または *Install Driver*）。
+4. もう 1 台のリーダでも同じ操作を行う。
+
+リーダごとに実施してください。あとで Sony の FeliCa ソフトに戻したい場合は、
+デバイスマネージャーで該当デバイスの WinUSB ドライバを削除し、Windows に
+純正ドライバを再適用させます。macOS / Linux ではこの作業は不要です。
+
 ## ビルド
 
 ```sh
