@@ -104,8 +104,16 @@ RUST_LOG=info ./target/release/s380-relay server --listen 0.0.0.0:7878
 |------|------|------|
 | `-l, --listen <addr:port>` | `127.0.0.1:7878` | 待ち受けアドレス |
 | `--tech <a\|b>` | `a` | 実カードの ISO14443 方式 |
-| `-d, --device-index <n>` | `0` | 使用する RC-S380（`list` 参照） |
+| `--reader <port100\|port400>` | `port100` | カード側リーダのバックエンド |
+| `-d, --device-index <n>` | `0` | 使用する RC-S380（port100、`list` 参照） |
 | `-t, --timeout <ms>` | `1000` | コマンドごとのタイムアウト |
+
+> **Type B には RC-S300 が必要です。** RC-S380（Port-100）のドライバは Type B の
+> 活性化（ATTRIB）はできますが、**Type B のデータ段**を完了できません（カードが
+> データ段の I-ブロックに応答しない）。Type B カードを中継するときは、カード側に
+> `--reader port400` と **RC-S300（PaSoRi 4.0）**を使ってください。RC-S300 の
+> ドライバは完全な PC/SC ISO-DEP スタック（WTX/チェイニング/IFS）を備えます。
+> Type A はどちらのリーダでも動作します。
 
 ### クライアント（スマホ側）
 
