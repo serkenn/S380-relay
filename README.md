@@ -112,8 +112,15 @@ RUST_LOG=info ./target/release/s380-relay server --listen 0.0.0.0:7878
 |------|---------|---------|
 | `-l, --listen <addr:port>` | `127.0.0.1:7878` | TCP listen address |
 | `--tech <a\|b>` | `a` | Real card's ISO14443 technology |
-| `-d, --device-index <n>` | `0` | Which RC-S380 to use (see `list`) |
+| `--reader <port100\|port400>` | `port100` | Card-side reader backend |
+| `-d, --device-index <n>` | `0` | Which RC-S380 to use (port100; see `list`) |
 | `-t, --timeout <ms>` | `1000` | Per-command timeout |
+
+> **Type B needs an RC-S300.** The RC-S380 (Port-100) driver activates a Type B
+> card (ATTRIB) but cannot complete the Type B *data phase* — the card never
+> answers the data-phase I-blocks. Use `--reader port400` with an RC-S300
+> (PaSoRi 4.0), whose driver has a full PC/SC ISO-DEP stack (WTX/chaining/IFS),
+> for the card side when relaying a Type B card. Type A works on either reader.
 
 ### Client (phone side)
 

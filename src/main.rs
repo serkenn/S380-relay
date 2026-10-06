@@ -9,12 +9,14 @@
 //!
 //! Run `s380-relay --help` for usage.
 
+mod cardside;
 mod client;
 mod isodep;
 mod protocol;
 mod server;
 mod usb;
 
+use cardside::Reader;
 use protocol::Tech;
 use std::error::Error;
 use std::process::exit;
@@ -50,6 +52,7 @@ fn run_server(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut config = server::ServerConfig {
         listen_addr: DEFAULT_ADDR.to_string(),
         tech: Tech::A,
+        reader: Reader::Port100,
         timeout_ms: 1000,
         device_index: 0,
     };
@@ -59,6 +62,7 @@ fn run_server(args: &[String]) -> Result<(), Box<dyn Error>> {
         match args[i].as_str() {
             "--listen" | "-l" => config.listen_addr = take_value(args, &mut i, "--listen")?,
             "--tech" => config.tech = parse_tech(&take_value(args, &mut i, "--tech")?)?,
+            "--reader" => config.reader = parse_reader(&take_value(args, &mut i, "--reader")?)?,
             "--device-index" | "-d" => {
                 config.device_index = parse_usize(&take_value(args, &mut i, "--device-index")?)?
             }
@@ -153,6 +157,14 @@ fn parse_tech(value: &str) -> Result<Tech, Box<dyn Error>> {
     }
 }
 
+fn parse_reader(value: &str) -> Result<Reader, Box<dyn Error>> {
+    match value.to_ascii_lowercase().as_str() {
+        "port100" | "rc-s380" | "rcs380" | "s380" => Ok(Reader::Port100),
+        "port400" | "rc-s300" | "rcs300" | "s300" => Ok(Reader::Port400),
+        other => Err(format!("invalid --reader '{}' (expected port100 or port400)", other).into()),
+    }
+}
+
 fn parse_u16(value: &str) -> Result<u16, Box<dyn Error>> {
     value
         .parse()
@@ -190,7 +202,9 @@ fn print_server_usage() {
     eprintln!("Options:");
     eprintln!("  -l, --listen <addr:port>    Listen address (default: {})", DEFAULT_ADDR);
     eprintln!("      --tech <a|b>            Real card's ISO14443 technology (default: a)");
-    eprintln!("  -d, --device-index <n>      Which RC-S380 to use (default: 0; see 'list')");
+    eprintln!("      --reader <port100|port400>  Card-side reader (default: port100)");
+    eprintln!("                              port400 = RC-S300, needed for Type B data exchange");
+    eprintln!("  -d, --device-index <n>      Which RC-S380 to use (port100 only; see 'list')");
     eprintln!("  -t, --timeout <ms>          Per-command timeout (default: 1000)");
     eprintln!("  -h, --help                  Show this help");
 }
