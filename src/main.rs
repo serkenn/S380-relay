@@ -10,6 +10,7 @@
 //! Run `s380-relay --help` for usage.
 
 mod client;
+mod isodep;
 mod protocol;
 mod server;
 mod usb;
@@ -84,6 +85,8 @@ fn run_client(args: &[String]) -> Result<(), Box<dyn Error>> {
         // Defaults to reader 1 so that, on a single host with two readers, the
         // client and a default server (reader 0) do not collide.
         device_index: 1,
+        use_wtx: true,
+        wtxm: 10,
     };
 
     let mut i = 0;
@@ -92,6 +95,10 @@ fn run_client(args: &[String]) -> Result<(), Box<dyn Error>> {
             "--connect" | "-c" => config.server_addr = take_value(args, &mut i, "--connect")?,
             "--device-index" | "-d" => {
                 config.device_index = parse_usize(&take_value(args, &mut i, "--device-index")?)?
+            }
+            "--no-wtx" => config.use_wtx = false,
+            "--wtxm" => {
+                config.wtxm = parse_u8_dec(&take_value(args, &mut i, "--wtxm")?)?.clamp(1, 59)
             }
             "--timeout" | "-t" => {
                 config.command_timeout_ms = parse_u16(&take_value(args, &mut i, "--timeout")?)?
@@ -158,6 +165,12 @@ fn parse_usize(value: &str) -> Result<usize, Box<dyn Error>> {
         .map_err(|e| format!("invalid index '{}': {}", value, e).into())
 }
 
+fn parse_u8_dec(value: &str) -> Result<u8, Box<dyn Error>> {
+    value
+        .parse()
+        .map_err(|e| format!("invalid number '{}': {}", value, e).into())
+}
+
 fn print_usage() {
     eprintln!("s380-relay — relay ISO14443 (NFC-A/B) traffic between two RC-S380 readers");
     eprintln!();
@@ -176,19 +189,20 @@ fn print_server_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -l, --listen <addr:port>    Listen address (default: {})", DEFAULT_ADDR);
-    eprintln!("      --tech <a|b>            ISO14443 technology (default: a)");
-    eprintln!("                              NB: NFC-B can be polled but not emulated on RC-S380");
+    eprintln!("      --tech <a|b>            Real card's ISO14443 technology (default: a)");
     eprintln!("  -d, --device-index <n>      Which RC-S380 to use (default: 0; see 'list')");
     eprintln!("  -t, --timeout <ms>          Per-command timeout (default: 1000)");
     eprintln!("  -h, --help                  Show this help");
 }
 
 fn print_client_usage() {
-    eprintln!("s380-relay client — phone side (NFC-A only)");
+    eprintln!("s380-relay client — phone side (emulates a Type 4 NFC-A card)");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -c, --connect <addr:port>   Server address (default: {})", DEFAULT_ADDR);
     eprintln!("  -d, --device-index <n>      Which RC-S380 to use (default: 1; see 'list')");
+    eprintln!("      --no-wtx                Do not send S(WTX) before relaying");
+    eprintln!("      --wtxm <1-59>           Waiting-time extension multiplier (default: 10)");
     eprintln!("  -t, --timeout <ms>          Per-command timeout (default: 1000)");
     eprintln!("  -w, --window <seconds>      Listen window length (default: 1.0)");
     eprintln!("  -h, --help                  Show this help");
