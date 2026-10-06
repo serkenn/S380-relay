@@ -72,6 +72,8 @@ pub fn run(config: ServerConfig) -> Result<(), Box<dyn Error>> {
 struct Activated {
     target: RemoteTarget,
     fsc: usize,
+    /// Card Identifier to use in blocks, when the card expects one.
+    cid: Option<u8>,
     info: String,
 }
 
@@ -151,14 +153,19 @@ fn relay_apdu(
     }
 
     // First attempt against the already-activated card.
-    match exchange(session, device, &apdu, timeout) {
+    let first_err = match exchange(session, device, &apdu, timeout) {
         Ok(response) => return apdu_response(&response),
-        Err(e) => debug!("APDU failed ({e}); re-activating card and retrying once"),
-    }
+        Err(e) => e,
+    };
+    debug!("APDU failed ({first_err}); re-activating card and retrying once");
 
-    // The card likely dropped layer 4 while idle: re-activate and retry once.
+    // Retry once after re-activating, but keep the original error visible if the
+    // card can no longer be activated (it may still be in layer 4 and simply
+    // ignoring our blocks, in which case re-polling it will not answer).
     if let Err(e) = reactivate(device, config, session) {
-        return RelayResponse::error(format!("re-activation failed: {}", e));
+        return RelayResponse::error(format!(
+            "APDU exchange failed: {first_err} (re-activation also failed: {e})"
+        ));
     }
     match exchange(session, device, &apdu, timeout) {
         Ok(response) => apdu_response(&response),
@@ -209,7 +216,10 @@ fn reactivate(
         Tech::B => activate_type_b(device, config)?,
     };
     session.info = activated.info;
-    session.pcd = Some(Pcd::new(activated.fsc));
+    session.pcd = Some(match activated.cid {
+        Some(cid) => Pcd::with_cid(activated.fsc, cid),
+        None => Pcd::new(activated.fsc),
+    });
     session.target = Some(activated.target);
     Ok(())
 }
@@ -246,6 +256,7 @@ fn activate_type_a(
     Ok(Activated {
         target: found,
         fsc,
+        cid: None,
         info: hex_encode(&ats),
     })
 }
@@ -279,15 +290,20 @@ fn activate_type_b(
 
     // Type B frame size: high nibble of the first Protocol-Info byte (byte 9).
     let fsc = isodep::frame_size_from_code(sensb_res[9] >> 4);
+    // Frame Option bit 1 of the last Protocol-Info byte (byte 11): the card
+    // supports a CID and therefore expects it in every block (we assign 0).
+    let cid = (sensb_res[11] & 0x01 != 0).then_some(0u8);
     info!(
-        "NFC-B ISO-DEP card: SENSB_RES={} (FSC={})",
+        "NFC-B ISO-DEP card: SENSB_RES={} (FSC={}, CID={})",
         hex_encode(&sensb_res),
-        fsc
+        fsc,
+        cid.map_or_else(|| "none".to_string(), |c| c.to_string()),
     );
 
     Ok(Activated {
         target: found,
         fsc,
+        cid,
         info: hex_encode(&sensb_res),
     })
 }
