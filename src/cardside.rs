@@ -182,6 +182,36 @@ impl Port100Side {
     }
 }
 
+/// Retries a Port-400 detect/activation until it succeeds or `timeout_ms`
+/// elapses, polling roughly every 50 ms.
+///
+/// The driver's Type B sense (`request_type_b_info`) sends a single REQB with a
+/// hardcoded 10 ms RF window and no retry, so a card that is still powering up
+/// when the field comes on misses that one frame and the call fails with a
+/// `036401 (no response packet received)` timeout. Relay activation is lazy —
+/// it fires on client connect with no warm-up polling — so one retry loop here
+/// absorbs the card's power-up latency and re-arms the field each attempt
+/// (each `detect_*` re-runs `switch_protocol`). The last error is returned if
+/// the deadline passes.
+fn retry_activation<T, E, F>(timeout_ms: u16, mut attempt: F) -> Result<T, E>
+where
+    F: FnMut() -> Result<T, E>,
+{
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms.max(1)));
+    loop {
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(err);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 /// Derives FSC from an ATS: FSCI is the low nibble of T0 (byte after TL).
 fn fsc_from_ats(ats: &[u8]) -> usize {
     match ats.get(1) {
@@ -217,24 +247,26 @@ impl CardSide for Port400Side {
         self.tech
     }
 
-    fn activate(&mut self, _timeout: u16) -> Result<String, String> {
+    fn activate(&mut self, timeout: u16) -> Result<String, String> {
         match self.tech {
             Tech::A => {
-                let options = TypeADetectOptions {
-                    iso_dep: Some(IsoDepConfig::type_a_defaults()),
-                };
-                let uid = self
-                    .device
-                    .detect_type_a(Some(options))
-                    .map_err(|e| format!("NFC-A activation failed: {e}"))?;
+                let device = &mut self.device;
+                let uid = retry_activation(timeout, || {
+                    let options = TypeADetectOptions {
+                        iso_dep: Some(IsoDepConfig::type_a_defaults()),
+                    };
+                    device.detect_type_a(Some(options))
+                })
+                .map_err(|e| format!("NFC-A activation failed: {e}"))?;
                 info!("NFC-A ISO-DEP card (Port-400): UID={}", hex_encode(&uid));
                 Ok(hex_encode(&uid))
             }
             Tech::B => {
-                let pupi = self
-                    .device
-                    .detect_type_b(Some(TypeBDetectOptions::default()))
-                    .map_err(|e| format!("NFC-B activation failed: {e}"))?;
+                let device = &mut self.device;
+                let pupi = retry_activation(timeout, || {
+                    device.detect_type_b(Some(TypeBDetectOptions::default()))
+                })
+                .map_err(|e| format!("NFC-B activation failed: {e}"))?;
                 info!("NFC-B ISO-DEP card (Port-400): PUPI={}", hex_encode(&pupi));
                 Ok(hex_encode(&pupi))
             }

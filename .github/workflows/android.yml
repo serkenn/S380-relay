@@ -1,0 +1,59 @@
+name: Android APK
+
+on:
+  push:
+    tags: ["v*"]                       # tag push -> build + attach to a Release
+    branches: [main]                   # main push -> build + upload as artifact
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:                    # manual run from the Actions tab
+
+permissions:
+  contents: write                       # needed to create the Release / upload assets
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"         # no wrapper committed; provision Gradle
+
+      - name: Build debug APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Name the APK
+        id: apk
+        run: |
+          mkdir -p dist
+          NAME="s380-relay-hce-${GITHUB_REF_NAME}.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/${NAME}"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Attach APK to Release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+          generate_release_notes: true

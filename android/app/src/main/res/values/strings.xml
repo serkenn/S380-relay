@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">S380 Relay (HCE)</string>
+    <string name="service_desc">S380 relay card emulation</string>
+    <string name="aid_group_desc">Relayed card applications</string>
+</resources>
