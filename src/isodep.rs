@@ -106,15 +106,58 @@ pub struct Pcd {
     block: u8,
     /// Maximum INF bytes per block when sending to the card (FSC minus CRC).
     max_inf: usize,
+    /// Card Identifier to include in every block, when one was assigned. Type B
+    /// cards that advertise CID support (ATQB Protocol-Info FO bit) expect the
+    /// CID byte even when it is 0; Type A with CID 0 omits it (`None`).
+    cid: Option<u8>,
 }
 
 impl Pcd {
-    /// Creates a PCD layer. `fsc` is the card's frame size (from ATS / ATQB);
-    /// block numbering starts at 0, as required right after RATS / ATTRIB.
+    /// Creates a PCD layer without a CID. `fsc` is the card's frame size (from
+    /// ATS / ATQB); block numbering starts at 0, as required right after RATS /
+    /// ATTRIB.
     pub fn new(fsc: usize) -> Self {
         Self {
             block: 0,
             max_inf: fsc.saturating_sub(2).max(1),
+            cid: None,
+        }
+    }
+
+    /// Creates a PCD layer that includes `cid` in every block.
+    pub fn with_cid(fsc: usize, cid: u8) -> Self {
+        Self {
+            block: 0,
+            max_inf: fsc.saturating_sub(2).max(1),
+            cid: Some(cid & 0x0F),
+        }
+    }
+
+    /// Builds an I-block header (PCB, plus the CID byte when one is used).
+    fn i_header(&self, chaining: bool) -> Vec<u8> {
+        self.with_cid_byte(i_block(self.block, chaining))
+    }
+
+    /// Builds a complete R(ACK) block (PCB, plus the CID byte when used).
+    fn r_ack_block(&self) -> Vec<u8> {
+        self.with_cid_byte(r_ack(self.block))
+    }
+
+    /// Builds a complete S(WTX) block (PCB, optional CID, then the WTXM byte).
+    fn s_wtx_block(&self, wtxm: u8) -> Vec<u8> {
+        let mut block = self.with_cid_byte(0xF2);
+        block.push(wtxm & 0x3F);
+        block
+    }
+
+    /// Prefixes a PCB with the CID flag and byte when a CID is in use.
+    fn with_cid_byte(&self, mut pcb: u8) -> Vec<u8> {
+        match self.cid {
+            Some(cid) => vec![pcb | 0x08, cid],
+            None => {
+                pcb &= !0x08;
+                vec![pcb]
+            }
         }
     }
 
@@ -135,8 +178,7 @@ impl Pcd {
 
         for (i, chunk) in chunks.iter().enumerate() {
             let last = i == chunks.len() - 1;
-            let mut frame = Vec::with_capacity(chunk.len() + 1);
-            frame.push(i_block(self.block, !last));
+            let mut frame = self.i_header(!last);
             frame.extend_from_slice(chunk);
 
             let first = send(&frame)?;
@@ -177,7 +219,8 @@ impl Pcd {
                 return Ok(data);
             }
             // More to come: acknowledge with the next block number.
-            cur = send(&[r_ack(self.block)])?;
+            let ack = self.r_ack_block();
+            cur = send(&ack)?;
         }
     }
 
@@ -187,8 +230,11 @@ impl Pcd {
         F: FnMut(&[u8]) -> Result<Vec<u8>, String>,
     {
         while reply.first().copied().is_some_and(is_s_wtx) {
-            let wtxm = reply.get(1).copied().unwrap_or(1);
-            reply = send(&s_wtx(wtxm))?;
+            // The WTXM is the last byte of the card's S(WTX) request (after an
+            // optional CID byte).
+            let wtxm = reply.last().copied().unwrap_or(1);
+            let block = self.s_wtx_block(wtxm);
+            reply = send(&block)?;
         }
         Ok(reply)
     }
@@ -261,6 +307,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(response, vec![0x6A, 0x82]);
+    }
+
+    #[test]
+    fn cid_is_included_in_blocks_and_skipped_on_response() {
+        let mut pcd = Pcd::with_cid(256, 0);
+        let mut sent = Vec::new();
+        let response = pcd
+            .transmit(
+                |frame| {
+                    sent.push(frame.to_vec());
+                    // Card echoes an I-block carrying the CID byte, then INF.
+                    Ok(vec![i_block(0, false) | 0x08, 0x00, 0x90, 0x00])
+                },
+                &[0x00, 0xA4],
+            )
+            .unwrap();
+        // Sent frame: PCB with CID flag (0x0A), CID byte (0x00), then the APDU.
+        assert_eq!(sent[0], vec![0x0A, 0x00, 0x00, 0xA4]);
+        // The CID byte is stripped from the response INF.
+        assert_eq!(response, vec![0x90, 0x00]);
     }
 
     #[test]
