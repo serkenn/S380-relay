@@ -8,6 +8,7 @@ use felica::{RemoteTarget, open_port400};
 use std::time::{Duration, Instant};
 
 fn main() {
+    env_logger::init();
     let mut dev = match open_port400() {
         Ok(d) => d,
         Err(e) => {

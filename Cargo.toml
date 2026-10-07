@@ -18,3 +18,9 @@ serde_json = "1.0"
 [[bin]]
 name = "s380-relay"
 path = "src/main.rs"
+
+# Patched felica with the RC-S300 (Port-400) ISO 14443-4 Type B fix
+# (SwitchProtocol ATR detection + best-effort S(IFS)). Fork of
+# https://github.com/soltia48/felica-rs; drop this once it lands upstream.
+[patch.crates-io]
+felica = { git = "https://github.com/serkenn/felica-rs", branch = "fix-rcs300-typeb" }
