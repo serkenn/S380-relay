@@ -65,6 +65,11 @@ reinstall — exact matches route most reliably.
   link across taps. Open the app once before tapping; a cold first tap may
   still time out on strict terminals (e.g. the Sony PC/SC driver) and succeed
   on the next one.
+- Android keeps the terminal waiting until the app answers, so if no response
+  comes back from the server within 5 s the app answers `6F00` itself (and
+  drops the late response) rather than leaving the terminal hung.
+- The log is kept in memory (last 500 lines), so taps that happen while the
+  app is in the background still show up when it is reopened.
 - The terminal sees the **phone's** random Type-A UID, not the real card's. A
   terminal that checks UID or enforces Type B will reject the relay.
 ```

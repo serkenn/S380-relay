@@ -16,12 +16,13 @@ class RelayHostApduService : HostApduService() {
 
     override fun onCreate() {
         super.onCreate()
+        RelayLink.log(".. HCE service started")
         RelayLink.warmUp(this)
     }
 
     override fun processCommandApdu(commandApdu: ByteArray?, extras: Bundle?): ByteArray? {
         val apdu = commandApdu ?: return SW_ERROR
-        RelayLink.log(this, "<= ${RelayClient.toHex(apdu)}")
+        RelayLink.log("<= ${RelayClient.toHex(apdu)}")
         RelayLink.exchange(this, apdu) { sendResponseApdu(it) }
         // Response is sent asynchronously above.
         return null
@@ -31,7 +32,7 @@ class RelayHostApduService : HostApduService() {
         // Keep the link: rebuilding it on the next tap is what made terminals
         // time out. A card that dropped out meanwhile is re-activated by the
         // server when an APDU fails.
-        RelayLink.log(this, ".. deactivated (reason=$reason)")
+        RelayLink.log(".. deactivated (reason=$reason)")
     }
 
     companion object {
