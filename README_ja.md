@@ -1,22 +1,24 @@
 # s380-relay
 
-2台の Sony **RC-S380**（NFC Port-100）リーダ間で、ISO14443 スマートカードの通信を
-ネットワーク越しに **APDU レイヤ**で中継する Rust 製ツールです。
-[`felica`](https://crates.io/crates/felica) クレートの上に実装しています。
+リーダ間で ISO14443 スマートカードの通信を、ネットワーク越しに **APDU レイヤ**で
+中継する Rust 製ツールです。[`felica`](https://crates.io/crates/felica) クレートの
+上に実装。カード側は Sony **RC-S380**（NFC Port-100）と **RC-S300 / PaSoRi 4.0**
+（NFC Port-400）に対応し、端末側は RC-S380 または **Android スマホ（HCE）**が使えます。
 
-一方のリーダ（**サーバ**）に実カード（JavaCard applet、スマートカード等）を載せ、
-もう一方のリーダ（**クライアント**）がスマホに対してカードとして振る舞います。
-スマホをクライアントにかざすと、スマホが送るコマンド APDU が TCP でサーバへ中継され、
-実カードへ送られ、応答 APDU が返されます。スマホからは実カードと会話しているように見えます。
+一方（**サーバ**）に実カード（JavaCard applet、スマートカード、ISO14443-4 カード等）を
+載せ、もう一方（**クライアント**）が端末/スマホに対してカードとして振る舞います。
+端末をクライアントにかざすと、端末が送るコマンド APDU が TCP でサーバへ中継され、
+実カードへ送られ、応答 APDU が返されます。端末からは実カードと会話しているように見えます。
 
 ```
- スマホ ⇢ (Type A / ISO-DEP) ⇢ [client RC-S380] ──APDU を TCP で──▶ [server RC-S380] ⇢ 実カード
-          └ ここで ISO-DEP を終端                                  └ ここで ISO-DEP を終端
-                                 リンクを渡るのは ISO 7816-4 APDU のみ
+ 端末 ⇢ (Type A / ISO-DEP) ⇢ [client: RC-S380 or Android HCE] ──APDU を TCP で──▶ [server: RC-S380/RC-S300] ⇢ 実カード
+        └ ここで ISO-DEP を終端                                                    └ ここで ISO-DEP を終端
+                                      リンクを渡るのは ISO 7816-4 APDU のみ
 ```
 
 **自分が所有する（またはテスト許可のある）リーダ・カード**で、研究・CTF・相互接続検証に
-使うことを想定した NFC リレー/エミュレーション環境です。
+使うことを想定した NFC リレー/エミュレーション環境です。所有していない、または許可の無い
+カードの中継は違法になり得ます。許可を得る責任は利用者にあります。
 
 ## クロステクノロジ中継（A ⇄ B）
 
@@ -45,8 +47,14 @@ APDU 交換（JavaCard applet が関知する部分）には影響せず、リ�
 ## 必要なもの
 
 - Rust 1.88 以降（2024 edition）
-- Sony RC-S380 を 2 台（別々のマシンに 1 台ずつ、または 1 台のホストに 2 台）
-- リーダへの USB アクセス権（Linux では udev ルールや十分な権限が必要な場合あり）
+- カード側：Sony RC-S380（Port-100）、または RC-S300 / PaSoRi 4.0（Port-400）
+  — **Type B は RC-S300 が必須**（下の「サーバ」の注記参照）
+- 端末側：もう 1 台の RC-S380、**または** [`android/`](android/README.md) の
+  HCE クライアントを動かす Android スマホ
+- リーダへの USB アクセス権（Linux では udev ルール等。Windows では後述の Zadig で
+  WinUSB に紐づけ）
+- `git` — `cargo build` がパッチ済み `felica` フォークを git 経由で取得します
+  （Type B の注記参照）。手動作業は不要です
 
 ### Windows: Zadig で WinUSB ドライバを当てる
 
@@ -114,6 +122,12 @@ RUST_LOG=info ./target/release/s380-relay server --listen 0.0.0.0:7878
 > `--reader port400` と **RC-S300（PaSoRi 4.0）**を使ってください。RC-S300 の
 > ドライバは完全な PC/SC ISO-DEP スタック（WTX/チェイニング/IFS）を備えます。
 > Type A はどちらのリーダでも動作します。
+>
+> RC-S300 の Type B はパッチ済み `felica`（[`[patch.crates-io]`](Cargo.toml) 参照）に
+> 依存します。本家クレートは、活性化済みのカードが応答しない別 REQB から検出を読もうと
+> して失敗（`036401`）し、さらにデータ段でカードが無視する任意の S(IFS) により交換が
+> 中断していました。フォークでは検出を SwitchProtocol の ATR から読み、S(IFS) を
+> ベストエフォート化しています。`cargo build` が自動取得します（上流に入り次第、撤去予定）。
 
 ### クライアント（スマホ側）
 
@@ -134,6 +148,31 @@ RUST_LOG=info ./target/release/s380-relay client --connect <server-ip>:7878
 
 各コマンドの中継前にスマホへ `S(WTX)` を送り、ネットワーク往復がスマホの
 フレーム待ち時間（FWT）に収まるようにしています。`--wtxm` で調整、`--no-wtx` で無効化できます。
+
+### Android HCE クライアント（代替）
+
+2 台目の RC-S380 の代わりに、Android スマホを HCE（Host Card Emulation）で
+クライアントにできます。端末へ Type-A の ISO-DEP カードとして提示し、APDU を
+同じ JSON プロトコルでサーバへ中継します。RC-S380 をカード側に回せ、常時稼働も容易です。
+アプリ・ビルド（GitHub Actions が APK を Releases に公開）・AID ルーティングは
+[`android/`](android/README.md) を参照。
+
+Android HCE は **Type A のみ**エミュレートできるため、真の Type-B エミュレーションは
+できません。ただしリンクは APDU のみなので、サーバ側の Type-B カードも端末へは
+Type A として提示されます。これは **Type-A の ISO-DEP カードを受け付ける端末**
+（RF 方式ではなく APDU を見る端末）に限り成立します。
+
+## 診断用サンプル
+
+`cargo run --release --example <name>` — 立ち上げ時に便利:
+
+| サンプル | 内容 |
+|---------|------|
+| `probe` | Port-400 リーダで Type B / FeliCa をポーリングし結果を表示 |
+| `probe100` | Port-100（RC-S380）で Type B をポーリング |
+| `relay_test_client` | サーバへ接続して APDU を数個送る（リーダ不要） |
+| `find_aid` | 候補 AID 群を実カードへ SELECT してカードを特定 |
+| `terminal` | RC-S380 を ISO-DEP リーダとして駆動し、スマホをタップして全リレーを検証 |
 
 ## 仕組み
 

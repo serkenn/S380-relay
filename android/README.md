@@ -53,10 +53,10 @@ reinstall — exact matches route most reliably.
 
 ## Status / limitations
 
-- **End-to-end needs the server to read the real card.** The RC-S300 Type-B read
-  currently fails (`036401`); until that is fixed, `get_card` returns an error
-  that the app logs. You can still verify HCE routing + connectivity: tap the
-  phone and watch the app connect and the SELECT arrive.
+- **End-to-end verified** against an RC-S300 card side: tapping a terminal to the
+  phone connects to the server, activates the real card and relays real APDU
+  responses back. (Type B on the RC-S300 needs the patched `felica` fork the
+  server build already uses.)
 - **Timing:** each APDU makes a terminal→phone→server→card round trip. On a LAN
   this is usually within the ISO-DEP frame-waiting time, but a slow link or a
   slow card may trip the terminal's timeout. The app cannot send S(WTX).

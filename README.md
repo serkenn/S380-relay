@@ -1,26 +1,29 @@
 # s380-relay
 
-Relay ISO14443 smartcard traffic between two Sony **RC-S380** (NFC Port-100)
-readers over the network, at the **APDU layer**, built in Rust on top of the
-[`felica`](https://crates.io/crates/felica) crate.
+Relay ISO14443 smartcard traffic between two readers over the network, at the
+**APDU layer**, built in Rust on top of the
+[`felica`](https://crates.io/crates/felica) crate. Supports Sony **RC-S380**
+(NFC Port-100) and **RC-S300 / PaSoRi 4.0** (NFC Port-400) on the card side, and
+either an RC-S380 or an **Android phone (HCE)** on the terminal-facing side.
 
 > 日本語版は [README_ja.md](README_ja.md) にあります。
 
-One reader (the **server**) holds a real card — a JavaCard applet, a smartcard,
-etc. The other reader (the **client**) presents a card to a phone. When a phone
-is tapped to the client, every command APDU it sends is relayed over TCP to the
-server's reader, replayed to the real card, and the response APDU is played
-back. From the phone's point of view it is talking to the real card.
+The **server** holds a real card — a JavaCard applet, a smartcard, an ISO14443-4
+card — on its reader. The **client** presents a card to a terminal/phone. When a
+terminal is tapped to the client, every command APDU it sends is relayed over
+TCP to the server's reader, replayed to the real card, and the response APDU is
+played back. From the terminal's point of view it is talking to the real card.
 
 ```
- phone ⇢ (Type A / ISO-DEP) ⇢ [client RC-S380] ──APDU over TCP──▶ [server RC-S380] ⇢ real card
-         └ ISO-DEP terminated here                                └ ISO-DEP terminated here
-                               only ISO 7816-4 APDUs cross the link
+ terminal ⇢ (Type A / ISO-DEP) ⇢ [client: RC-S380 or Android HCE] ──APDU over TCP──▶ [server: RC-S380/RC-S300] ⇢ real card
+            └ ISO-DEP terminated here                                                 └ ISO-DEP terminated here
+                                        only ISO 7816-4 APDUs cross the link
 ```
 
 This is an NFC relay/emulation setup for use with **your own readers and cards**
 (or cards you are authorised to test) in research, CTF, and interoperability
-testing.
+testing. Relaying a card you do not own or are not authorised to test may be
+illegal; the burden is on you to have authorisation.
 
 ## Cross-technology relay (A ⇄ B)
 
@@ -50,9 +53,14 @@ the lower-layer identity a reader observes.
 ## Requirements
 
 - Rust 1.88+ (2024 edition)
-- Two Sony RC-S380 readers (one per machine, or both on one host)
+- Card side: a Sony RC-S380 (Port-100), or an RC-S300 / PaSoRi 4.0 (Port-400)
+  — **Type B requires the RC-S300** (see the note under *Server* below)
+- Terminal side: a second RC-S380, **or** an Android phone running the HCE
+  client in [`android/`](android/README.md)
 - USB access to the readers (on Linux you may need a udev rule or sufficient
-  privileges)
+  privileges; on Windows bind the reader to WinUSB with Zadig, below)
+- `git` — `cargo build` fetches the patched `felica` fork over git (see the
+  Type B note); no manual step is needed
 
 ### Windows: install a WinUSB driver with Zadig
 
@@ -121,6 +129,14 @@ RUST_LOG=info ./target/release/s380-relay server --listen 0.0.0.0:7878
 > answers the data-phase I-blocks. Use `--reader port400` with an RC-S300
 > (PaSoRi 4.0), whose driver has a full PC/SC ISO-DEP stack (WTX/chaining/IFS),
 > for the card side when relaying a Type B card. Type A works on either reader.
+>
+> Type B on the RC-S300 relies on a patched `felica` (see
+> [`[patch.crates-io]`](Cargo.toml)): the stock crate read detection from a
+> separate REQB that the already-activated card never answers (`036401`), and its
+> ISO-DEP data phase aborted on an optional S(IFS) the card ignores. The fork
+> reads detection from the SwitchProtocol ATR and makes S(IFS) best-effort. The
+> patch is fetched automatically by `cargo build`; it will be dropped once the
+> fix lands upstream.
 
 ### Client (phone side)
 
@@ -142,6 +158,31 @@ RUST_LOG=info ./target/release/s380-relay client --connect <server-ip>:7878
 `S(WTX)` is sent to the phone before each relayed command so the network
 round-trip stays within the phone's frame-waiting time; raise `--wtxm` (or lower
 it) to tune, or `--no-wtx` to disable.
+
+### Android HCE client (alternative)
+
+Instead of a second RC-S380, an Android phone can be the client using Host Card
+Emulation: it presents a Type-A ISO-DEP card to the terminal and relays the
+APDUs to the server over the same JSON protocol. This frees the RC-S380 for the
+card side and is easy to keep running. See [`android/`](android/README.md) for
+the app, build (GitHub Actions publishes an APK to Releases) and routing notes.
+
+Android HCE only emulates **Type A**, so a genuine Type-B emulation is not
+possible — but since the link is APDU-only, a Type-B card on the server is still
+presented to the terminal as Type A. This works only with terminals that accept
+a Type-A ISO-DEP card (i.e. that check APDUs, not the RF technology).
+
+## Diagnostic examples
+
+`cargo run --release --example <name>` — handy during bring-up:
+
+| Example | What it does |
+|---------|--------------|
+| `probe` | Polls a Port-400 reader for Type B / FeliCa and prints what it finds |
+| `probe100` | Polls a Port-100 (RC-S380) reader for Type B |
+| `relay_test_client` | Connects to the server and sends a few APDUs (no reader needed) |
+| `find_aid` | SELECTs a list of candidate AIDs against the real card to identify it |
+| `terminal` | Drives an RC-S380 as an ISO-DEP reader to tap the phone and exercise the full relay |
 
 ## How the relay works
 
