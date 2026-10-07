@@ -289,7 +289,7 @@ dependencies = [
 [[package]]
 name = "felica"
 version = "1.0.4"
-source = "git+https://github.com/serkenn/felica-rs?branch=fix-rcs300-typeb#979c41f41d64d379ba535851201f2ec56bb13801"
+source = "git+https://github.com/serkenn/felica-rs?branch=fix-rcs300-typeb#1a821121b9eb2c20fc736fc5eb941c42def5a05d"
 dependencies = [
  "aes",
  "cbc",

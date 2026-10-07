@@ -134,7 +134,9 @@ RUST_LOG=info ./target/release/s380-relay server --listen 0.0.0.0:7878
 > [`[patch.crates-io]`](Cargo.toml)): the stock crate read detection from a
 > separate REQB that the already-activated card never answers (`036401`), and its
 > ISO-DEP data phase aborted on an optional S(IFS) the card ignores. The fork
-> reads detection from the SwitchProtocol ATR and makes S(IFS) best-effort. The
+> reads detection from the SwitchProtocol ATR, makes S(IFS) best-effort, and
+> sets the fixed PCB bits of R- and S-blocks (the stock encoding sent e.g. R(ACK)
+> as `89`, which cards ignore, so chained responses over one frame timed out). The
 > patch is fetched automatically by `cargo build`; it will be dropped once the
 > fix lands upstream.
 
