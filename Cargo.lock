@@ -289,8 +289,7 @@ dependencies = [
 [[package]]
 name = "felica"
 version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5bc85e8fa02aaec9fe12144bbe088d17950cf72be9af4f0d59d8e956b6ac406"
+source = "git+https://github.com/serkenn/felica-rs?branch=fix-rcs300-typeb#979c41f41d64d379ba535851201f2ec56bb13801"
 dependencies = [
  "aes",
  "cbc",
