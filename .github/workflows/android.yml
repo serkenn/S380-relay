@@ -34,7 +34,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: "8.9"         # no wrapper committed; provision Gradle
+          gradle-version: "9.8.0"       # no wrapper committed; provision Gradle
 
       # Each runner generates a fresh debug keystore, so every build was signed
       # with a different key and could not be installed over the previous one.

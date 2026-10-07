@@ -14,7 +14,7 @@ terminal that cares about APDUs, not the RF technology (A vs B) underneath.
 
 Open the `android/` folder in **Android Studio** (it will create the Gradle
 wrapper and sync), then Run on a physical NFC phone. Or from the CLI with a
-local Gradle 8.x:
+local Gradle 9.6+ (AGP 9.4 requirement):
 
 ```bash
 cd android
