@@ -2,6 +2,7 @@ package com.s380relay.client
 
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.EOFException
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -73,7 +74,7 @@ class RelayClient(
     }
 
     private fun readLine(): String =
-        reader?.readLine() ?: throw RelayException("connection closed by server")
+        reader?.readLine() ?: throw EOFException("connection closed by server")
 
     companion object {
         private val HEX = "0123456789abcdef".toCharArray()

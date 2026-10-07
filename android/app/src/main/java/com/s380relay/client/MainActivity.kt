@@ -20,7 +20,8 @@ import java.util.Locale
 /**
  * Minimal UI: set the relay server IP/port and watch the live APDU log that the
  * HCE service broadcasts. The relay itself runs in RelayHostApduService whenever
- * a terminal taps the phone — the activity does not need to be open for it.
+ * a terminal taps the phone — the activity does not need to be open for it, but
+ * opening it connects to the server ahead of the tap.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -30,7 +31,7 @@ class MainActivity : AppCompatActivity() {
 
     private val logReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val line = intent?.getStringExtra(RelayHostApduService.EXTRA_LINE) ?: return
+            val line = intent?.getStringExtra(RelayLink.EXTRA_LINE) ?: return
             appendLog(line)
         }
     }
@@ -53,6 +54,7 @@ class MainActivity : AppCompatActivity() {
             Settings.save(this, hostEdit.text.toString(), p)
             Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
             appendLog(".. saved ${hostEdit.text}:$p")
+            RelayLink.reconnect(this)
         }
         findViewById<Button>(R.id.nfcSettings).setOnClickListener {
             // Card-emulation / NFC settings vary by OEM; NFC settings is the
@@ -64,13 +66,15 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        val filter = IntentFilter(RelayHostApduService.ACTION_LOG)
+        val filter = IntentFilter(RelayLink.ACTION_LOG)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(logReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             registerReceiver(logReceiver, filter)
         }
+        // Open the relay link before the tap; see RelayLink.
+        RelayLink.warmUp(this)
     }
 
     override fun onPause() {

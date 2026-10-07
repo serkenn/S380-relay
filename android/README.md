@@ -60,6 +60,11 @@ reinstall — exact matches route most reliably.
 - **Timing:** each APDU makes a terminal→phone→server→card round trip. On a LAN
   this is usually within the ISO-DEP frame-waiting time, but a slow link or a
   slow card may trip the terminal's timeout. The app cannot send S(WTX).
+  To keep the first APDU fast, the app connects and runs `get_card` ahead of
+  the tap (when the app is opened or the HCE service starts) and keeps the
+  link across taps. Open the app once before tapping; a cold first tap may
+  still time out on strict terminals (e.g. the Sony PC/SC driver) and succeed
+  on the next one.
 - The terminal sees the **phone's** random Type-A UID, not the real card's. A
   terminal that checks UID or enforces Type B will reject the relay.
 ```
