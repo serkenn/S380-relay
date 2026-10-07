@@ -15,6 +15,15 @@ android {
         versionName = "0.1"
     }
 
+    signingConfigs {
+        // CI points this at a fixed keystore (see .github/workflows/android.yml)
+        // so every build has the same signature; locally the default
+        // ~/.android/debug.keystore is used.
+        getByName("debug") {
+            System.getenv("DEBUG_KEYSTORE")?.let { storeFile = file(it) }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

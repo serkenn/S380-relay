@@ -36,11 +36,11 @@ jobs:
         with:
           gradle-version: "8.9"         # no wrapper committed; provision Gradle
 
-      # Each runner generates a fresh ~/.android/debug.keystore, so every build
-      # was signed with a different key and could not be installed over the
-      # previous one. Restore a fixed debug keystore from the
-      # DEBUG_KEYSTORE_B64 secret (base64 of a keystore with the standard
-      # debug credentials: alias androiddebugkey, passwords "android").
+      # Each runner generates a fresh debug keystore, so every build was signed
+      # with a different key and could not be installed over the previous one.
+      # Restore a fixed debug keystore from the DEBUG_KEYSTORE_B64 secret
+      # (base64 of a keystore with the standard debug credentials: alias
+      # androiddebugkey, passwords "android") and point Gradle at it.
       - name: Restore fixed debug keystore
         env:
           DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
@@ -49,8 +49,9 @@ jobs:
             echo "::warning::DEBUG_KEYSTORE_B64 is not set; the APK is signed with a throwaway key and will not install over an earlier build"
             exit 0
           fi
-          mkdir -p ~/.android
-          echo "${DEBUG_KEYSTORE_B64}" | base64 -d > ~/.android/debug.keystore
+          echo "${DEBUG_KEYSTORE_B64}" | base64 -d > "${RUNNER_TEMP}/debug.keystore"
+          # Read by android/app/build.gradle.kts (signingConfigs.debug).
+          echo "DEBUG_KEYSTORE=${RUNNER_TEMP}/debug.keystore" >> "$GITHUB_ENV"
 
       - name: Build debug APK
         working-directory: android
@@ -63,6 +64,9 @@ jobs:
           NAME="s380-relay-hce-${GITHUB_REF_NAME}.apk"
           cp android/app/build/outputs/apk/debug/app-debug.apk "dist/${NAME}"
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Show signing certificate
+        run: keytool -printcert -jarfile "dist/${{ steps.apk.outputs.name }}" | grep -E "Owner|SHA256"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
