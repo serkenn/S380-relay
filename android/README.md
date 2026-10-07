@@ -26,6 +26,13 @@ gradle wrapper        # once, to generate ./gradlew
 An emulator has no NFC — you need a real phone with HCE
 (`android.hardware.nfc.hce`).
 
+GitHub Actions builds the APK on every push to `main` (artifact) and on `v*`
+tags (attached to a Release). To keep the signature stable across builds, so a
+new APK installs over the old one, store a debug keystore (alias
+`androiddebugkey`, store and key password `android`) base64-encoded in the
+repository secret `DEBUG_KEYSTORE_B64`. Without it each build gets a throwaway
+key and updating requires uninstalling first.
+
 ## Run
 
 1. **Server must listen on the LAN**, not loopback, so the phone can reach it:

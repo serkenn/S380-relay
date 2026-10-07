@@ -36,6 +36,22 @@ jobs:
         with:
           gradle-version: "8.9"         # no wrapper committed; provision Gradle
 
+      # Each runner generates a fresh ~/.android/debug.keystore, so every build
+      # was signed with a different key and could not be installed over the
+      # previous one. Restore a fixed debug keystore from the
+      # DEBUG_KEYSTORE_B64 secret (base64 of a keystore with the standard
+      # debug credentials: alias androiddebugkey, passwords "android").
+      - name: Restore fixed debug keystore
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -z "${DEBUG_KEYSTORE_B64}" ]; then
+            echo "::warning::DEBUG_KEYSTORE_B64 is not set; the APK is signed with a throwaway key and will not install over an earlier build"
+            exit 0
+          fi
+          mkdir -p ~/.android
+          echo "${DEBUG_KEYSTORE_B64}" | base64 -d > ~/.android/debug.keystore
+
       - name: Build debug APK
         working-directory: android
         run: gradle assembleDebug --no-daemon --stacktrace
