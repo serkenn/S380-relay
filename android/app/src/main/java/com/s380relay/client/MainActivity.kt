@@ -1,6 +1,9 @@
 package com.s380relay.client
 
+import android.content.ComponentName
 import android.content.Intent
+import android.nfc.NfcAdapter
+import android.nfc.cardemulation.CardEmulation
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
 import android.widget.Button
@@ -16,11 +19,19 @@ import androidx.appcompat.app.AppCompatActivity
  * taps the phone — the activity does not need to be open for it, but opening
  * it connects to the server ahead of the tap. Lines logged while the activity
  * was in the background are shown when it comes back.
+ *
+ * While in the foreground it also makes the relay the preferred HCE service:
+ * other apps can claim the same AID (e.g. the Mynaportal app routes the JPKI
+ * AID to the phone's own secure element), and Android then holds the SELECT
+ * waiting for the user to choose, which hangs the terminal.
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var logView: TextView
     private lateinit var scroll: ScrollView
+    private val cardEmulation: CardEmulation? by lazy {
+        NfcAdapter.getDefaultAdapter(this)?.let { CardEmulation.getInstance(it) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,12 +68,20 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         logView.text = ""
         RelayLink.setLogListener { line -> runOnUiThread { appendLog(line) } }
+        val preferred = cardEmulation?.setPreferredService(
+            this, ComponentName(this, RelayHostApduService::class.java)
+        ) ?: false
+        RelayLink.log(
+            if (preferred) ".. preferred HCE service while in foreground"
+            else "!! could not become the preferred HCE service"
+        )
         // Open the relay link before the tap; see RelayLink.
         RelayLink.warmUp(this)
     }
 
     override fun onPause() {
         super.onPause()
+        cardEmulation?.unsetPreferredService(this)
         RelayLink.setLogListener(null)
     }
 

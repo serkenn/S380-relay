@@ -68,6 +68,11 @@ reinstall — exact matches route most reliably.
 - Android keeps the terminal waiting until the app answers, so if no response
   comes back from the server within 5 s the app answers `6F00` itself (and
   drops the late response) rather than leaving the terminal hung.
+- While the app is in the foreground it is the **preferred HCE service**. Other
+  apps may claim the same AID (the Mynaportal app routes the JPKI AID
+  `D392F000260100000001` to the phone's own secure element); Android then
+  holds the SELECT waiting for the user to pick an app and the terminal hangs.
+  Keep the app open on screen while tapping.
 - The log is kept in memory (last 500 lines), so taps that happen while the
   app is in the background still show up when it is reopened.
 - The terminal sees the **phone's** random Type-A UID, not the real card's. A
