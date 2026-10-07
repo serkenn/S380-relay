@@ -2,9 +2,10 @@
 //! ISO-DEP, and relays command APDUs to it for a remote client.
 //!
 //! The reader backend is pluggable ([`crate::cardside`]): an RC-S380 (Port-100)
-//! or an RC-S300 (Port-400). An APDU exchange that fails is retried once after
-//! re-activating the card, which recovers a card that dropped out of layer 4
-//! while the field was idle.
+//! or an RC-S300 (Port-400). When an APDU exchange fails the card is
+//! re-activated, which recovers a card that dropped out of layer 4 while the
+//! field was idle. Re-activation loses the card's state, so the failed APDU is
+//! replayed only if it is a SELECT by AID; otherwise the failure is reported.
 //!
 //! Only one physical reader is involved, so connections are served one at a
 //! time; a new client waits until the previous one disconnects. Clients keep
@@ -159,10 +160,10 @@ fn relay_apdu(
         Ok(response) => return apdu_response(&response),
         Err(e) => e,
     };
-    debug!("APDU failed ({first_err}); re-activating card and retrying once");
+    debug!("APDU failed ({first_err}); re-activating card");
 
-    // Retry once after re-activating, keeping the original error visible if the
-    // card can no longer be activated.
+    // Re-activate, keeping the original error visible if the card can no
+    // longer be activated.
     session.activated = false;
     if let Err(e) = card.activate(timeout) {
         return RelayResponse::error(format!(
@@ -170,15 +171,52 @@ fn relay_apdu(
         ));
     }
     session.activated = true;
+
+    // Re-activation resets the card's state (selected applet/file, verified
+    // PIN). Replaying a command that relies on it returns a misleading answer
+    // (e.g. 6D00 for a READ BINARY), so only a SELECT by AID, which sets that
+    // state itself, is replayed. Anything else is reported as a failure so the
+    // terminal starts over instead of trusting a wrong response.
+    if !is_select_by_aid(&apdu) {
+        warn!("APDU failed ({first_err}); card re-activated but its state was lost, not replaying");
+        return RelayResponse::error(format!(
+            "APDU exchange failed: {first_err} (card re-activated; state lost, not replayed)"
+        ));
+    }
+    debug!("replaying SELECT by AID on the re-activated card");
     match card.exchange(&apdu, timeout) {
         Ok(response) => apdu_response(&response),
         Err(e) => RelayResponse::error(format!("APDU exchange failed: {}", e)),
     }
 }
 
+/// ISO 7816-4 SELECT with P1=04 (select by DF name / AID).
+fn is_select_by_aid(apdu: &[u8]) -> bool {
+    apdu.len() >= 4 && apdu[1] == 0xA4 && apdu[2] == 0x04
+}
+
 fn apdu_response(response: &[u8]) -> RelayResponse {
     debug!("card APDU response: {}", hex_encode(response));
     RelayResponse::Apdu {
         data: hex_encode(response),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_select_by_aid;
+
+    #[test]
+    fn only_select_by_aid_is_replayable() {
+        // SELECT JPKI AP by AID.
+        assert!(is_select_by_aid(&[
+            0x00, 0xA4, 0x04, 0x0C, 0x0A, 0xD3, 0x92, 0xF0, 0x00, 0x26, 0x01, 0x00, 0x00, 0x00,
+            0x01
+        ]));
+        // SELECT EF by file ID depends on the selected applet.
+        assert!(!is_select_by_aid(&[0x00, 0xA4, 0x02, 0x0C, 0x02, 0x00, 0x0A]));
+        // READ BINARY depends on the selected EF.
+        assert!(!is_select_by_aid(&[0x00, 0xB0, 0x00, 0x00, 0x00]));
+        assert!(!is_select_by_aid(&[0x00, 0xA4]));
     }
 }
