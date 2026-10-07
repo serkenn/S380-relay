@@ -7,18 +7,29 @@
 //! while the field was idle.
 //!
 //! Only one physical reader is involved, so connections are served one at a
-//! time; a new client waits until the previous one disconnects.
+//! time; a new client waits until the previous one disconnects. Clients keep
+//! their link open between taps, so TCP keepalive is enabled to notice a peer
+//! that vanished without closing (e.g. the phone dropped off Wi-Fi) instead of
+//! blocking every later client forever.
 
 use crate::cardside::{self, CardSide, Reader};
 use crate::protocol::{RelayRequest, RelayResponse, Tech};
 use hex::{decode as hex_decode, encode as hex_encode};
 use log::{debug, info, warn};
+use socket2::{SockRef, TcpKeepalive};
 use std::error::Error;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::time::Duration;
 
 /// Caps a single request line, as in the `felica-rs` remote server.
 const MAX_LINE_BYTES: u64 = 64 * 1024;
+
+/// Idle time before the first keepalive probe, and the gap between probes.
+/// With the OS default probe count (10 on Windows, 9 on Linux) a dead peer is
+/// dropped after roughly a minute.
+const KEEPALIVE_TIME: Duration = Duration::from_secs(15);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -45,6 +56,12 @@ pub fn run(config: ServerConfig) -> Result<(), Box<dyn Error>> {
             Ok(stream) => {
                 let peer = stream.peer_addr().ok();
                 info!("client connected: {:?}", peer);
+                let keepalive = TcpKeepalive::new()
+                    .with_time(KEEPALIVE_TIME)
+                    .with_interval(KEEPALIVE_INTERVAL);
+                if let Err(e) = SockRef::from(&stream).set_tcp_keepalive(&keepalive) {
+                    warn!("could not enable TCP keepalive: {}", e);
+                }
                 if let Err(e) = handle_client(stream, card.as_mut(), &config) {
                     warn!("client session ended with error: {}", e);
                 }
